@@ -1541,10 +1541,10 @@ function renderDetail(deal) {
   const initialShots = [splash, cover].filter((v, i, a) => v && a.indexOf(v) === i);
   const shotsHTML = initialShots.length
     ? initialShots.map(s => `<img src="${escapeHtml(s)}" alt="" class="h-28 sm:h-36 rounded-lg object-cover border border-nexus-border shrink-0" onerror="this.remove()">`).join('')
-    : `<div class="text-xs text-slate-500 py-6">No screenshots available for this title.</div>`;
+    : `<div class="text-xs text-slate-500 py-6 animate-pulse">Loading live screenshots…</div>`;
 
-  const keyHint = RAWG_API_KEY ? '' :
-    `<p class="text-[11px] text-slate-600 mt-2 italic">Live screenshots & trailers activate when a free RAWG API key is set in <code>app.js</code>.</p>`;
+  // Screenshots + trailers now load keylessly from Steam; no note needed.
+  const keyHint = '';
 
   return `
   <!-- Sticky back bar -->
@@ -1656,7 +1656,77 @@ function refreshDetailIfOpen(id) {
   loadHistoricalLow(deal);
 }
 
-/* ---- RAWG metadata enrichment (key-gated, cached, graceful) ---- */
+/* ---- Metadata enrichment ------------------------------------------------
+ * Primary source is KEYLESS: Steam's public store `appdetails` endpoint,
+ * tunnelled through the same CORS-proxy array the importer uses. It returns
+ * real screenshots, official trailers + gameplay videos, a description and the
+ * studios — for any title we can resolve a Steam appID for. RAWG stays as an
+ * optional augment when a free key is pasted above. Result is cached per base
+ * title so re-opening a game (or a sibling edition) is instant.
+ * ----------------------------------------------------------------------- */
+
+const _https = (u = '') => u.replace(/^http:\/\//i, 'https://');
+
+// Resolve a Steam appID from every keyless signal we already hold, escalating
+// to a CheapShark title search only if the cheaper local lookups miss.
+async function resolveSteamAppId(deal) {
+  if (deal.steamAppID) return deal.steamAppID;
+  const fromImg = (deal.imgs || [])
+    .map(u => /steam\/apps\/(\d+)/.exec(u || ''))
+    .find(Boolean);
+  if (fromImg) return fromImg[1];
+  const mapped = STEAM_APPID[_atlasNorm(cleanTitleForSearch(deal.title))]
+    || STEAM_APPID[_atlasNorm(deal.title)];
+  if (mapped) return mapped;
+  try { return await ImageHarvester.findAppId(deal.title); }
+  catch { return null; }
+}
+
+// Keyless Steam appdetails → normalized meta (screenshots + movies + text).
+async function fetchSteamMeta(appid) {
+  const url = `https://store.steampowered.com/api/appdetails?appids=${appid}&l=english`;
+  const body = await fetchViaProxyText(url);
+  const json = JSON.parse(body);
+  const entry = json[appid] || json[String(appid)];
+  if (!entry || !entry.success || !entry.data) return null;
+  const d = entry.data;
+  const screenshots = (d.screenshots || []).map(s => _https(s.path_full)).filter(Boolean);
+  const movies = (d.movies || []).map(m => {
+    const mp4 = _https(m.mp4?.max || m.mp4?.['480'] || '');
+    const webm = _https(m.webm?.max || m.webm?.['480'] || '');
+    return { name: m.name || 'Video', poster: _https(m.thumbnail || ''),
+             src: mp4 || webm, type: mp4 ? 'video/mp4' : 'video/webm' };
+  }).filter(m => m.src);
+  return {
+    name: d.name,
+    background: _https(d.header_image || d.background_raw || '') || null,
+    screenshots,
+    movies,
+    description: (d.short_description || '').replace(/<[^>]+>/g, '').trim(),
+    developers: d.developers || [],
+    publishers: d.publishers || [],
+  };
+}
+
+// Fold an optional RAWG payload into an existing (Steam) meta, filling gaps.
+function mergeMeta(a, b) {
+  if (!a) a = {};
+  if (!b) return a;
+  const uniq = arr => [...new Set(arr.filter(Boolean))];
+  const bMovies = b.trailer
+    ? [{ name: 'Trailer', poster: b.trailerPoster || null, src: b.trailer, type: 'video/mp4' }]
+    : [];
+  return {
+    name: a.name || b.name,
+    background: a.background || b.background || null,
+    screenshots: uniq([...(a.screenshots || []), ...(b.screenshots || [])]),
+    movies: (a.movies && a.movies.length) ? a.movies : bMovies,
+    description: (b.description && b.description.length > (a.description || '').length)
+      ? b.description : (a.description || b.description || ''),
+    developers: uniq([...(a.developers || []), ...(b.developers || [])]),
+    publishers: uniq([...(a.publishers || []), ...(b.publishers || [])]),
+  };
+}
 
 async function fetchRawgMeta(title) {
   const key = RAWG_API_KEY;
@@ -1692,18 +1762,52 @@ async function fetchRawgMeta(title) {
 async function enrichDetail(deal) {
   const base = baseTitle(deal.title);
   const cached = State.meta[base];
-  if (cached) { applyMeta(deal, cached); return; }
-  if (!RAWG_API_KEY) return; // no key → keep curated fallback silently
+  if (cached) { applyMeta(deal, cached); ensureDetailCover(deal, cached); return; }
+
+  // Make sure the modal's key-art panel never stays blank, even before metadata
+  // resolves (console exclusives whose card art hadn't been harvested yet).
+  ensureDetailCover(deal, null);
+
+  let meta = null;
+  // Keyless primary source: Steam appdetails (screenshots + trailer + gameplay).
   try {
-    const meta = await fetchRawgMeta(deal.title);
-    if (meta) {
-      State.meta[base] = meta;
-      saveJSON(STORAGE.meta, State.meta);
-      applyMeta(deal, meta);
-    }
-  } catch (e) {
-    console.warn('[RAWG] enrichment failed:', e.message);
+    const appid = await resolveSteamAppId(deal);
+    if (appid) meta = await fetchSteamMeta(appid);
+  } catch (e) { console.warn('[Steam meta] enrichment failed:', e.message); }
+
+  // Optional augment: RAWG fills gaps (long description, extra shots) when keyed.
+  if (RAWG_API_KEY) {
+    try {
+      const r = await fetchRawgMeta(deal.title);
+      if (r) meta = mergeMeta(meta, r);
+    } catch (e) { console.warn('[RAWG] enrichment failed:', e.message); }
   }
+
+  if (meta) {
+    State.meta[base] = meta;
+    saveJSON(STORAGE.meta, State.meta);
+    applyMeta(deal, meta);
+    ensureDetailCover(deal, meta);
+  }
+}
+
+// Guarantee the detail modal shows real key art: reuse the deal's cover, fall
+// back to the fetched background, else harvest one (atlas → Steam → Wikipedia).
+async function ensureDetailCover(deal, meta) {
+  if (State.activeDetail !== deal.id) return;
+  let box = document.getElementById('detailCover');
+  if (!box || box.querySelector('img')) return; // already showing real art
+  let url = coverOf(deal) || (meta && meta.background) || null;
+  if (!url) { try { url = await ImageHarvester.resolve(deal.title); } catch { /* keep initials */ } }
+  if (!url || State.activeDetail !== deal.id) return;
+  box = document.getElementById('detailCover');
+  if (!box || box.querySelector('img')) return;
+  const cat = categoryMeta(deal.category);
+  box.innerHTML =
+    `<img src="${escapeHtml(url)}" alt="${escapeHtml(deal.title)} key art" class="w-full h-full object-cover"
+       onerror="this.onerror=null;this.src='${placeholderCover(deal.title, cat.accent)}'">`;
+  // Feed it back so the grid card + splash pick up the same art.
+  if (Array.isArray(deal.imgs) && !deal.imgs.includes(url)) deal.imgs.push(url);
 }
 
 // Apply fetched/cached metadata: upgrade art everywhere + fill modal sections.
@@ -1732,16 +1836,28 @@ function applyMeta(deal, meta) {
     if (el) el.innerHTML = meta.screenshots.map(s =>
       `<img src="${escapeHtml(s)}" alt="" class="h-28 sm:h-36 rounded-lg object-cover border border-nexus-border shrink-0" onerror="this.remove()">`).join('');
   }
-  if (meta.trailer) {
+  // Trailer + gameplay clips. Steam's `movies` array leads with the official
+  // trailer/highlight, followed by gameplay reveals; RAWG contributes a single
+  // trailer. Render the lead full-width and the rest as a scrollable strip.
+  const movies = meta.movies && meta.movies.length
+    ? meta.movies
+    : (meta.trailer ? [{ name: 'Trailer', poster: meta.trailerPoster || null, src: meta.trailer, type: 'video/mp4' }] : []);
+  if (movies.length) {
     const el = $('#detailTrailer');
     if (el) {
+      const lead = movies[0];
+      const rest = movies.slice(1);
+      const vid = (m, cls) =>
+        `<video controls playsinline preload="none" ${m.poster ? `poster="${escapeHtml(m.poster)}"` : ''} class="${cls}">
+           <source src="${escapeHtml(m.src)}" type="${escapeHtml(m.type || 'video/mp4')}">
+         </video>`;
       el.classList.remove('hidden');
       el.innerHTML = `
-        <h3 class="text-sm font-bold text-slate-300 mb-2">🎬 Trailer</h3>
-        <video controls playsinline preload="none" ${meta.trailerPoster ? `poster="${escapeHtml(meta.trailerPoster)}"` : ''}
-          class="w-full max-w-2xl rounded-xl border border-nexus-border bg-black">
-          <source src="${escapeHtml(meta.trailer)}" type="video/mp4">
-        </video>`;
+        <h3 class="text-sm font-bold text-slate-300 mb-2">🎬 Trailer &amp; Gameplay</h3>
+        ${vid(lead, 'w-full max-w-2xl rounded-xl border border-nexus-border bg-black')}
+        ${rest.length ? `<div class="flex gap-3 overflow-x-auto no-scrollbar pb-2 mt-3">
+          ${rest.map(m => vid(m, 'h-40 rounded-lg border border-nexus-border bg-black shrink-0')).join('')}
+        </div>` : ''}`;
     }
   }
 }
