@@ -127,6 +127,39 @@ const COVER_ATLAS = Object.fromEntries(Object.entries({
   'Splatoon 3': 'https://upload.wikimedia.org/wikipedia/en/4/4f/Splatoon.3.jpg',
   'Xenoblade Chronicles 3': 'https://upload.wikimedia.org/wikipedia/en/7/76/Xenoblade_3.png',
   'Metroid Prime Remastered': 'https://upload.wikimedia.org/wikipedia/en/b/ba/MetroidPrimebox.jpg',
+  'Metroid Dread': 'https://upload.wikimedia.org/wikipedia/en/5/57/Metroid_Dread_cover_art.jpg',
+  "Luigi's Mansion 3": 'https://upload.wikimedia.org/wikipedia/en/e/e0/Luigi%27s_Mansion_3_cover_art.jpg',
+  'Kirby and the Forgotten Land': 'https://upload.wikimedia.org/wikipedia/en/5/57/Kirby_and_the_Forgotten_Land.jpg',
+  'Pikmin 4': 'https://upload.wikimedia.org/wikipedia/en/1/17/Pikmin_4_cover_art.jpg',
+  'Bayonetta 3': 'https://upload.wikimedia.org/wikipedia/en/2/2f/Bayonetta_3_cover_art.jpg',
+  'Fire Emblem: Three Houses': 'https://upload.wikimedia.org/wikipedia/en/6/6f/Fire_Emblem_Three_Houses.jpg',
+  'Xenoblade Chronicles 2': 'https://upload.wikimedia.org/wikipedia/en/f/f4/Xenoblade_Chronicles_2.jpg',
+  "The Legend of Zelda: Link's Awakening": 'https://upload.wikimedia.org/wikipedia/en/5/59/Link%27s_Awakening_%282019_video_game%29.jpg',
+  'Donkey Kong Country: Tropical Freeze': 'https://upload.wikimedia.org/wikipedia/en/a/a4/Donkey_Kong_Country_Tropical_Freeze_box.jpg',
+  'Super Mario RPG': 'https://upload.wikimedia.org/wikipedia/en/9/9c/Super_Mario_RPG_2023_cover_art.jpg',
+  'Paper Mario: The Thousand-Year Door': 'https://upload.wikimedia.org/wikipedia/en/6/6e/Paper_Mario_The_Thousand-Year_Door_2024.jpg',
+  'Princess Peach: Showtime!': 'https://upload.wikimedia.org/wikipedia/en/8/8a/Princess_Peach_Showtime_cover.jpg',
+  'Pokémon Scarlet and Violet': 'https://upload.wikimedia.org/wikipedia/en/f/f0/Pokemon_Scarlet_and_Violet.jpg',
+  'Pokémon Legends: Arceus': 'https://upload.wikimedia.org/wikipedia/en/8/85/Pokemon_Legends_Arceus.jpg',
+  'Pokémon Sword and Shield': 'https://upload.wikimedia.org/wikipedia/en/e/e2/Pok%C3%A9mon_Sword_and_Shield.jpg',
+  'Mario Party Superstars': 'https://upload.wikimedia.org/wikipedia/en/2/2e/Mario_Party_Superstars_cover_art.jpg',
+  // ---- PlayStation exclusives ----
+  "Marvel's Spider-Man": 'https://upload.wikimedia.org/wikipedia/en/e/e1/Spider-Man_PS4_cover.jpg',
+  'Spider-Man Remastered': 'https://upload.wikimedia.org/wikipedia/en/e/e1/Spider-Man_PS4_cover.jpg',
+  "Marvel's Spider-Man 2": 'https://upload.wikimedia.org/wikipedia/en/f/f9/Spider-Man_2_2023.jpg',
+  'The Last of Us Part II': 'https://upload.wikimedia.org/wikipedia/en/4/4f/TLOU_P2_Box_Art_Final.png',
+  'The Last of Us Part I': 'https://upload.wikimedia.org/wikipedia/en/4/46/Video_Game_Cover_-_The_Last_of_Us_Part_I.png',
+  "Uncharted 4: A Thief's End": 'https://upload.wikimedia.org/wikipedia/en/2/2a/Uncharted_4_box_artwork.jpg',
+  'Ghost of Tsushima': 'https://upload.wikimedia.org/wikipedia/en/b/b6/Ghost_of_Tsushima.jpg',
+  'Horizon Forbidden West': 'https://upload.wikimedia.org/wikipedia/en/1/12/Horizon_Forbidden_West_cover_art.jpg',
+  'Horizon Zero Dawn': 'https://upload.wikimedia.org/wikipedia/en/9/93/Horizon_Zero_Dawn.jpg',
+  "Demon's Souls": 'https://upload.wikimedia.org/wikipedia/en/a/ac/Demon%27s_Souls_2020.jpg',
+  'Ratchet & Clank: Rift Apart': 'https://upload.wikimedia.org/wikipedia/en/1/13/Ratchet_%26_Clank_Rift_Apart_cover_art.jpg',
+  'Returnal': 'https://upload.wikimedia.org/wikipedia/en/2/25/Returnal_cover_art.jpg',
+  'Final Fantasy VII Rebirth': 'https://upload.wikimedia.org/wikipedia/en/5/5f/Final_Fantasy_VII_Rebirth_cover_art.jpg',
+  // ---- Xbox exclusives ----
+  "Hellblade: Senua's Sacrifice": 'https://upload.wikimedia.org/wikipedia/en/6/6b/Hellblade_Senua%27s_Sacrifice_cover_art.jpg',
+  'Ori and the Blind Forest': 'https://upload.wikimedia.org/wikipedia/en/0/0f/Ori_and_the_blind_forest_cover.jpg',
   // ---- Non-Steam Free-to-Play ----
   'Rocket League': 'https://upload.wikimedia.org/wikipedia/commons/e/e0/Rocket_League_coverart.jpg',
 }).map(([k, v]) => [_atlasNorm(k), v]));
@@ -235,7 +268,11 @@ function placeholderCover(title = 'Game', accent = '#8b5cf6') {
         fill='#ffffff' fill-opacity='0.9' text-anchor='middle'>${initials}</text>
       <text x='150' y='372' font-family='Segoe UI,sans-serif' font-size='17' font-weight='600'
         fill='#e5e7eb' text-anchor='middle'>${t}</text></svg>`;
-  return 'data:image/svg+xml,' + encodeURIComponent(svg.replace(/\n\s*/g, ' '));
+  // NB: encodeURIComponent leaves apostrophes raw, and this data URL gets embedded
+  // inside single-quoted onerror="…this.src='…'" handlers — an un-encoded ' would
+  // terminate that JS string early (SyntaxError) and the fallback cover would never
+  // apply. Encode the SVG's single quotes so the URL is safe in a '…' context.
+  return 'data:image/svg+xml,' + encodeURIComponent(svg.replace(/\n\s*/g, ' ')).replace(/'/g, '%27');
 }
 
 function toast(msg, kind = 'info') {
@@ -809,6 +846,16 @@ const ImageHarvester = {
     const key = clean.toLowerCase();
     if (key in this._wiki) return this._wiki[key];
     const api = 'https://en.wikipedia.org/w/api.php';
+    // Fast, reliable path: a game article's lead/infobox image IS the box art.
+    // pageimages returns it directly — no hash-prefixed URL guessing, no scan.
+    try {
+      const pj = await fetch(`${api}?action=query&format=json&origin=*&redirects=1&prop=pageimages&piprop=original|thumbnail&pithumbsize=600&titles=${encodeURIComponent(clean)}`).then(r => r.json());
+      const pp = Object.values(pj.query.pages)[0];
+      const lead = pp && ((pp.thumbnail && pp.thumbnail.source) || (pp.original && pp.original.source));
+      if (lead && /\.(jpe?g|png)(\?|$)/i.test(lead) && !/\.svg/i.test(lead)) {
+        this._wiki[key] = lead; return lead;
+      }
+    } catch { /* fall through to the image-scan heuristic */ }
     try {
       const j = await fetch(`${api}?action=query&format=json&origin=*&redirects=1&prop=images&imlimit=60&titles=${encodeURIComponent(clean)}`).then(r => r.json());
       const pg = Object.values(j.query.pages)[0];
@@ -839,11 +886,14 @@ const ImageHarvester = {
     } catch { this._wiki[key] = null; return null; }
   },
   // Unified cover router: atlas → Steam capsule → Wikipedia → null (Tier 3).
-  async resolve(title) {
+  // `skip` lets the error path bypass a URL that already failed to load (e.g. a
+  // stale atlas entry) so a broken cover still recovers via Steam/Wikipedia
+  // instead of dead-ending on the text-initial fallback.
+  async resolve(title, skip = null) {
     const atlas = atlasLookup(title);
-    if (atlas) return atlas;
+    if (atlas && atlas !== skip) return atlas;
     const appid = await this.findAppId(title);
-    if (appid) return this.steamArt(appid, true);
+    if (appid) { const art = this.steamArt(appid, true); if (art !== skip) return art; }
     return this.findWikipediaCover(title);
   },
   // Harvest a cover for a fallback frame that has no Tier-1 art.
@@ -894,7 +944,8 @@ function nexusImgErr(img) {
   // Tier 2/2.5: harvest a cover by title (atlas → Steam → Wikipedia), once per image.
   if (img.dataset.harvested !== '1' && img.dataset.title) {
     img.dataset.harvested = '1';
-    ImageHarvester.resolve(img.dataset.title).then(url => {
+    const failed = img.src;   // skip whatever just 404'd (e.g. a stale atlas URL)
+    ImageHarvester.resolve(img.dataset.title, failed).then(url => {
       if (url) {
         img.dataset.srcs = JSON.stringify([url]);
         img.dataset.idx = '0';
@@ -1501,6 +1552,100 @@ function editionRowHTML(d, activeId, cheapestId) {
     </div>`;
 }
 
+// Clickable/tappable screenshot thumbnails that open the fullscreen lightbox.
+function shotsMarkup(urls) {
+  return urls.map((s, i) =>
+    `<img src="${escapeHtml(s)}" data-shot="${escapeHtml(s)}" alt="Screenshot ${i + 1}" loading="lazy"
+       class="h-28 sm:h-36 rounded-lg object-cover border border-nexus-border shrink-0 cursor-zoom-in hover:border-nexus-cyan transition"
+       onclick="nexusOpenShot(this)" onerror="this.remove()">`).join('');
+}
+
+// Last-resort screenshot fill: if no live media resolved, show the key art so
+// the strip is never a stuck spinner (still tappable to enlarge).
+function finalizeShots(deal) {
+  if (State.activeDetail !== deal.id) return;
+  const el = document.getElementById('detailShots');
+  if (!el || !el.querySelector('[data-shots-loading]')) return; // real shots already applied
+  const urls = [splashOf(deal), coverOf(deal)].filter((v, i, a) => v && a.indexOf(v) === i);
+  el.innerHTML = urls.length ? shotsMarkup(urls)
+    : `<div class="text-xs text-slate-500 py-6">No screenshots available for this title.</div>`;
+}
+
+// Fullscreen screenshot viewer — click or tap a shot to enlarge; arrows / swipe
+// to page through the set; Esc, ✕, or backdrop tap to close.
+const Lightbox = {
+  urls: [], idx: 0, el: null, _key: null,
+  open(urls, idx) {
+    if (!urls || !urls.length) return;
+    this.urls = urls;
+    this.idx = Math.max(0, Math.min(idx || 0, urls.length - 1));
+    if (!this.el) this._build();
+    this.el.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    this._render();
+    // Capture phase + stopPropagation so the app's global Esc/arrow handlers
+    // (which would close the whole detail modal) never see these keys while the
+    // lightbox is up — Esc closes the lightbox only.
+    this._key = (e) => {
+      if (!['Escape', 'ArrowRight', 'ArrowLeft'].includes(e.key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      if (e.key === 'Escape') this.close();
+      else if (e.key === 'ArrowRight') this.next(1);
+      else this.next(-1);
+    };
+    document.addEventListener('keydown', this._key, true);
+  },
+  _build() {
+    const el = document.createElement('div');
+    el.id = 'nexus-lightbox';
+    el.className = 'hidden fixed inset-0 z-[120] bg-black/95 flex items-center justify-center select-none';
+    el.innerHTML = `
+      <button data-lb-close aria-label="Close" class="absolute top-3 right-4 w-10 h-10 grid place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white text-2xl leading-none">×</button>
+      <button data-lb-prev aria-label="Previous" class="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-11 h-11 grid place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white text-3xl leading-none">‹</button>
+      <button data-lb-next aria-label="Next" class="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-11 h-11 grid place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white text-3xl leading-none">›</button>
+      <img data-lb-img alt="" class="max-w-[94vw] max-h-[88vh] object-contain rounded-lg shadow-2xl">
+      <div data-lb-count class="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-white/80 bg-black/50 px-3 py-1 rounded-full"></div>`;
+    document.body.appendChild(el);
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-lb-next]')) this.next(1);
+      else if (e.target.closest('[data-lb-prev]')) this.next(-1);
+      else if (e.target.closest('[data-lb-close]') || e.target === el) this.close();
+    });
+    let x0 = null;
+    el.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+    el.addEventListener('touchend', (e) => {
+      if (x0 == null) return;
+      const dx = e.changedTouches[0].clientX - x0; x0 = null;
+      if (Math.abs(dx) > 45) this.next(dx < 0 ? 1 : -1);
+    }, { passive: true });
+    this.el = el;
+  },
+  _render() {
+    const img = this.el.querySelector('[data-lb-img]');
+    img.src = this.urls[this.idx];
+    const multi = this.urls.length > 1;
+    this.el.querySelector('[data-lb-prev]').style.display = multi ? '' : 'none';
+    this.el.querySelector('[data-lb-next]').style.display = multi ? '' : 'none';
+    this.el.querySelector('[data-lb-count]').textContent = multi ? `${this.idx + 1} / ${this.urls.length}` : '';
+  },
+  next(d) { this.idx = (this.idx + d + this.urls.length) % this.urls.length; this._render(); },
+  close() {
+    if (!this.el) return;
+    this.el.classList.add('hidden');
+    if (this._key) { document.removeEventListener('keydown', this._key, true); this._key = null; }
+    const modal = document.getElementById('game-detail-modal');
+    document.body.style.overflow = (modal && modal.classList.contains('open')) ? 'hidden' : '';
+  },
+};
+function nexusOpenShot(imgEl) {
+  const box = imgEl.closest('#detailShots') || imgEl.parentElement;
+  const urls = [...box.querySelectorAll('[data-shot]')].map(n => n.dataset.shot).filter(Boolean);
+  Lightbox.open(urls, Math.max(0, urls.indexOf(imgEl.dataset.shot)));
+}
+window.nexusOpenShot = nexusOpenShot;
+
 function renderDetail(deal) {
   const cat = categoryMeta(deal.category);
   const related = relatedEditions(deal);
@@ -1538,10 +1683,10 @@ function renderDetail(deal) {
     ? `background-image:url('${escapeHtml(splash)}');background-size:cover;background-position:center`
     : `background:radial-gradient(120% 120% at 50% 0%, ${cat.accent}55 0%, transparent 60%), linear-gradient(160deg,#1b1b2e,#0c0c14)`;
 
-  const initialShots = [splash, cover].filter((v, i, a) => v && a.indexOf(v) === i);
-  const shotsHTML = initialShots.length
-    ? initialShots.map(s => `<img src="${escapeHtml(s)}" alt="" class="h-28 sm:h-36 rounded-lg object-cover border border-nexus-border shrink-0" onerror="this.remove()">`).join('')
-    : `<div class="text-xs text-slate-500 py-6 animate-pulse">Loading live screenshots…</div>`;
+  // Start with a loading state only — never pad the strip with cover art posing
+  // as screenshots. enrichDetail() fills real gameplay shots, or finalizeShots()
+  // falls back to the key art if no live media resolves.
+  const shotsHTML = `<div class="text-xs text-slate-500 py-6 animate-pulse" data-shots-loading>Loading live screenshots…</div>`;
 
   // Screenshots + trailers now load keylessly from Steam; no note needed.
   const keyHint = '';
@@ -1762,7 +1907,7 @@ async function fetchRawgMeta(title) {
 async function enrichDetail(deal) {
   const base = baseTitle(deal.title);
   const cached = State.meta[base];
-  if (cached) { applyMeta(deal, cached); ensureDetailCover(deal, cached); return; }
+  if (cached) { applyMeta(deal, cached); ensureDetailCover(deal, cached); finalizeShots(deal); return; }
 
   // Make sure the modal's key-art panel never stays blank, even before metadata
   // resolves (console exclusives whose card art hadn't been harvested yet).
@@ -1789,6 +1934,7 @@ async function enrichDetail(deal) {
     applyMeta(deal, meta);
     ensureDetailCover(deal, meta);
   }
+  finalizeShots(deal); // fill key-art fallback if no live screenshots resolved
 }
 
 // Guarantee the detail modal shows real key art: reuse the deal's cover, fall
@@ -1833,8 +1979,10 @@ function applyMeta(deal, meta) {
   }
   if (meta.screenshots && meta.screenshots.length) {
     const el = $('#detailShots');
-    if (el) el.innerHTML = meta.screenshots.map(s =>
-      `<img src="${escapeHtml(s)}" alt="" class="h-28 sm:h-36 rounded-lg object-cover border border-nexus-border shrink-0" onerror="this.remove()">`).join('');
+    // Drop any shot identical to the cover so the strip is all gameplay.
+    const cover = coverOf(deal);
+    const shots = [...new Set(meta.screenshots.filter(s => s && s !== cover))];
+    if (el && shots.length) el.innerHTML = shotsMarkup(shots);
   }
   // Trailer + gameplay clips. Steam's `movies` array leads with the official
   // trailer/highlight, followed by gameplay reveals; RAWG contributes a single
@@ -2235,6 +2383,7 @@ function parseSteamId(input) {
 // allorigins.win -> api.allorigins.win/get, corsproxy.io -> /?url=, freeboard.io ->
 // thingproxy.freeboard.io/fetch.)
 const CORS_PROXIES = [
+  (u) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`, // raw body, reliable for JSON
   (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,          // raw body
   (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, // wraps body in .contents
   (u) => `https://thingproxy.freeboard.io/fetch/${u}`,                  // raw body
