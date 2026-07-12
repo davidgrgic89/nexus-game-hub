@@ -1,0 +1,2645 @@
+/* ============================================================================
+ *  NEXUS GAME HUB — app.js
+ *  Master engine: data pipelines, global state, library/favorites persistence,
+ *  manual deal entry, hi-res art, infinite-scroll pagination, sub-filter matrix,
+ *  and dynamic DOM rendering.
+ *  Vanilla JS, no build step. Persists to localStorage.
+ * ========================================================================== */
+'use strict';
+
+/* --------------------------------------------------------------------------
+ * 1. STATIC CONFIGURATION
+ * ------------------------------------------------------------------------ */
+
+const SYSTEMS = [
+  { id: 'pc',      label: 'PC',          tag: 'PC',  color: '#22d3ee', emoji: '💻' },
+  { id: 'xbox',    label: 'Xbox',        tag: 'XSX', color: '#22c55e', emoji: '💚' },
+  { id: 'ps',      label: 'PlayStation', tag: 'PS5', color: '#3b82f6', emoji: '💙' },
+  { id: 'switch',  label: 'Switch 1',    tag: 'SW',  color: '#ef4444', emoji: '🔴' },
+  { id: 'switch2', label: 'Switch 2',    tag: 'SW2', color: '#f97316', emoji: '🟠' },
+];
+
+// Category -> which systems it belongs to (for filtering) + presentation.
+const CATEGORIES = [
+  { id: 'free',        title: '100% Free to Claim Right Now', emoji: '🎁', accent: '#22c55e',
+    blurb: 'Limited-time — premium games temporarily $0. Claim before they rotate!', systems: ['pc'] },
+  { id: 'pc',          title: 'PC Master Race Deals', emoji: '💻', accent: '#22d3ee',
+    blurb: 'Steam · GOG · Epic price drops', systems: ['pc'] },
+  { id: 'playstation', title: 'PlayStation Lounge',   emoji: '💙', accent: '#3b82f6',
+    blurb: 'PS Store discounts for PS4 & PS5', systems: ['ps'] },
+  { id: 'xbox',        title: 'Xbox Arena',           emoji: '💚', accent: '#22c55e',
+    blurb: 'Xbox & Microsoft Store deals', systems: ['xbox'] },
+  { id: 'nintendo',    title: 'Nintendo eShop Discounts', emoji: '🛑', accent: '#ef4444',
+    blurb: 'Switch 1 & Switch 2 eShop sales', systems: ['switch', 'switch2'] },
+  { id: 'f2p',         title: 'Free-to-Play Staples (Always Free)', emoji: '🎮', accent: '#3b82f6',
+    blurb: 'Permanently free — no purchase, no expiry, valid links forever', systems: ['pc', 'ps', 'xbox'] },
+];
+
+// Independent sub-filter dropdowns for console sections. PC & Free sections use
+// the multi-select STORE_CHECKS checkbox row instead (see sectionHTML).
+const SUBFILTERS = {
+  playstation: [{ v: 'all', l: 'All' }, { v: 'ps4', l: 'PS4' }, { v: 'ps5', l: 'PS5' }, { v: 'psplus', l: 'PS Plus Free' }],
+  xbox:        [{ v: 'all', l: 'All' }, { v: 'series', l: 'Series X|S' }, { v: 'one', l: 'Xbox One' }, { v: 'gamepass', l: 'Game Pass' }],
+  nintendo:    [{ v: 'all', l: 'All' }, { v: 'switch', l: 'Switch 1' }, { v: 'switch2', l: 'Switch 2' }, { v: 'eshop', l: 'eShop Exclusives' }],
+};
+
+// Sub-type -> short tag badge label.
+const SUBTAG = { ps5: 'PS5', ps4: 'PS4', psplus: 'PS+', switch: 'SW', switch2: 'SW2', eshop: 'eShop', series: 'XSX', one: 'XB1', gamepass: 'GP' };
+
+const STORAGE = {
+  favorites: 'nexus.favorites.v1',
+  library:   'nexus.library.v1',
+  manual:    'nexus.manual.v1',
+  meta:      'nexus.meta.v1',
+};
+
+const CHEAPSHARK_PAGE_SIZE = 30;
+const cheapSharkUrl = (page) =>
+  `https://www.cheapshark.com/api/1.0/deals?pageSize=${CHEAPSHARK_PAGE_SIZE}` +
+  `&sortBy=Deal Rating&onSale=1&pageNumber=${page}`;
+
+// CheapShark numeric storeID -> brand name (for historical-low store labels).
+const CHEAPSHARK_STORES = {
+  1: 'Steam', 2: 'GamersGate', 3: 'Green Man Gaming', 7: 'GOG', 8: 'Origin',
+  11: 'Humble Store', 13: 'Uplay', 15: 'Fanatical', 21: 'WinGameStore',
+  23: 'GameBillet', 24: 'Voidu', 25: 'Epic Games', 27: 'Gamesplanet',
+  28: 'Gamesload', 29: '2Game', 30: 'IndieGala', 31: 'Blizzard', 33: 'DLGamer',
+  34: 'Noctre', 35: 'DreamGame',
+};
+
+// Optional: paste a free key from https://rawg.io/apidocs to enable live
+// metadata enrichment (descriptions, screenshots, trailers). Left blank the app
+// falls back cleanly to curated art + a generated description — nothing breaks.
+const RAWG_API_KEY = '';
+
+// The Steam importer is fully KEYLESS — it reads the public community profile
+// (resolved through the CORS-proxy array below), so no Web API key is required.
+
+// Curated Steam AppID map for high-profile multi-platform titles. Lets us pull
+// real vertical capsule art onto console/mock cards (keyless), fixing the
+// text-initial fallbacks (e.g. Elden Ring's "ER"). Keyed by normalized base title.
+const STEAM_APPID = {
+  'elden ring': 1245620, 'cyberpunk 2077': 1091500, 'red dead redemption 2': 1174180,
+  'baldur s gate 3': 1086940, 'hogwarts legacy': 990080, 'diablo iv': 2344520,
+  'starfield': 1716740, 'forza horizon 5': 1551360, 'sea of thieves': 1172620,
+  'halo infinite': 1240440, 'god of war': 1593500, 'god of war ragnarök': 2322010,
+  'marvel s spider man 2': 2651280, 'marvel s spider man miles morales': 1817190,
+  'the last of us part i': 1888930, 'helldivers 2': 553850, 'days gone': 1259420,
+  'returnal': 1649240, 'death stranding': 1850570, 'detroit become human': 1222140,
+  'sackboy a big adventure': 1599660, 'ghost of tsushima': 2215430,
+  'horizon zero dawn complete': 1151640, 'horizon forbidden west': 2420110,
+  'ea sports fc 25': 2669320, 'call of duty black ops 6': 2933620, 'mortal kombat 1': 1971870,
+  'dragon s dogma 2': 2054970, 'silent hill 2': 2124490, 'resident evil 4': 2050650,
+  'dead space': 1693980, 'star wars jedi survivor': 1774580, 'palworld': 1623730,
+  'it takes two': 1426210, 'the elder scrolls v skyrim ae': 489830, 'hollow knight': 367520,
+  'stardew valley': 413150, 'hades': 1145360, 'hades ii': 1145350, 'dead cells': 588650,
+  'cuphead': 268910, 'celeste': 504230, 'octopath traveler ii': 1971650, 'sea of stars': 1244090,
+  'control': 870780, 'the witcher 3 wild hunt': 292030, 'sifu': 2138710,
+  'cities skylines ii': 949230, 'sons of the forest': 1326470, 'deep rock galactic': 548430,
+  'terraria': 105600, 'gears 5': 1097840, 'ori and the will of the wisps': 1057090,
+  'grounded': 962130, 'pentiment': 1205520, 'state of decay 2': 495420,
+  'age of empires iv': 1466860, 'microsoft flight simulator 2024': 2537590,
+  'forza motorsport': 2440510, 'avowed': 2457220, 'senua s saga hellblade ii': 2461850,
+  'assassin s creed mirage': 3035570,
+};
+
+// Hardcoded premium cover atlas for high-profile CONSOLE / Nintendo exclusives
+// (and non-Steam F2P) that Steam can't provide. Values are verified public
+// Wikimedia box-art URLs — they load cross-origin in <img> (no hotlink block),
+// decoupling cover coverage from Steam's database. Keys are punctuation-insensitive.
+const _atlasNorm = (s = '') => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const COVER_ATLAS = Object.fromEntries(Object.entries({
+  // ---- PlayStation exclusives ----
+  'Bloodborne': 'https://upload.wikimedia.org/wikipedia/en/6/68/Bloodborne_Cover_Wallpaper.jpg',
+  'God of War': 'https://upload.wikimedia.org/wikipedia/en/a/a7/God_of_War_4_cover.jpg',
+  'God of War (2018)': 'https://upload.wikimedia.org/wikipedia/en/a/a7/God_of_War_4_cover.jpg',
+  'Gran Turismo 7': 'https://upload.wikimedia.org/wikipedia/en/1/14/Gran_Turismo_7_cover_art.jpg',
+  'Astro Bot': 'https://upload.wikimedia.org/wikipedia/en/a/a9/Astro_Bot_cover_art.jpg',
+  // ---- Nintendo Switch exclusives ----
+  'The Legend of Zelda: Tears of the Kingdom': 'https://upload.wikimedia.org/wikipedia/en/f/fb/The_Legend_of_Zelda_Tears_of_the_Kingdom_cover.jpg',
+  'Super Mario Odyssey': 'https://upload.wikimedia.org/wikipedia/en/8/8d/Super_Mario_Odyssey.jpg',
+  'Mario Kart World': 'https://upload.wikimedia.org/wikipedia/en/6/65/Mario_Kart_World_Cover_Artwork.png',
+  'Mario Kart 8 Deluxe': 'https://upload.wikimedia.org/wikipedia/en/b/b5/MarioKart8Boxart.jpg',
+  'The Legend of Zelda: Breath of the Wild': 'https://upload.wikimedia.org/wikipedia/en/c/c6/The_Legend_of_Zelda_Breath_of_the_Wild.jpg',
+  'Super Mario Bros. Wonder': 'https://upload.wikimedia.org/wikipedia/en/a/a3/Mariowonder.png',
+  'Super Smash Bros. Ultimate': 'https://upload.wikimedia.org/wikipedia/en/5/50/Super_Smash_Bros._Ultimate.jpg',
+  'Animal Crossing: New Horizons': 'https://upload.wikimedia.org/wikipedia/en/1/1f/Animal_Crossing_New_Horizons.jpg',
+  'Splatoon 3': 'https://upload.wikimedia.org/wikipedia/en/4/4f/Splatoon.3.jpg',
+  'Xenoblade Chronicles 3': 'https://upload.wikimedia.org/wikipedia/en/7/76/Xenoblade_3.png',
+  'Metroid Prime Remastered': 'https://upload.wikimedia.org/wikipedia/en/b/ba/MetroidPrimebox.jpg',
+  // ---- Non-Steam Free-to-Play ----
+  'Rocket League': 'https://upload.wikimedia.org/wikipedia/commons/e/e0/Rocket_League_coverart.jpg',
+}).map(([k, v]) => [_atlasNorm(k), v]));
+
+function atlasLookup(title) {
+  return COVER_ATLAS[_atlasNorm(title)] || COVER_ATLAS[_atlasNorm(cleanTitleForSearch(title))] || null;
+}
+
+// Normalize a title to its edition-agnostic base for edition/appid matching.
+function baseTitle(t = '') {
+  return t.toLowerCase()
+    .replace(/[’']/g, ' ')
+    .replace(/[:\-–—!.,()]/g, ' ')
+    .replace(/\b(deluxe|ultimate|goty|game of the year|definitive|director s cut|complete|remastered|standard|edition)\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+// PC/subscription sub-store checkboxes (multi-select store separation).
+const STORE_CHECKS = [
+  { v: 'Steam', l: 'Steam',                emoji: '🟦' },
+  { v: 'Epic',  l: 'Epic Games Store',     emoji: '⚫' },
+  { v: 'GOG',   l: 'GOG',                  emoji: '🟣' },
+  { v: 'Prime', l: 'Amazon Prime Gaming',  emoji: '🔵' },
+  { v: 'Luna',  l: 'Amazon Luna',          emoji: '🌙' },
+];
+
+// Build a DEEP merchant link so users land on the actual product/search page
+// for that title, never a bare storefront homepage.
+function storeLink(store = '', title = '', category = '', system = '', appid) {
+  const s = store.toLowerCase();
+  const q = encodeURIComponent(title);
+  if (appid && s.includes('steam')) return `https://store.steampowered.com/app/${appid}/`;
+  if (s.includes('steam'))  return `https://store.steampowered.com/search/?term=${q}`;
+  if (s.includes('epic'))   return `https://store.epicgames.com/en-US/browse?q=${q}&sortBy=relevancy&sortDir=DESC`;
+  if (s.includes('gog'))    return `https://www.gog.com/en/games?query=${q}`;
+  if (s.includes('prime'))  return `https://gaming.amazon.com/search?q=${q}`;
+  if (s.includes('luna'))   return `https://luna.amazon.com/`;
+  if (category === 'playstation' || s.includes('playstation') || /\bps\b/.test(s))
+    return `https://store.playstation.com/en-us/search/${q}`;
+  if (category === 'xbox' || s.includes('xbox'))
+    return `https://www.xbox.com/en-US/Search/Results?q=${q}`;
+  if (category === 'nintendo' || s.includes('eshop') || s.includes('nintendo'))
+    return `https://www.nintendo.com/us/search/?q=${q}&p=1`;
+  if (appid) return `https://store.steampowered.com/app/${appid}/`;
+  return `https://store.steampowered.com/search/?term=${q}`;
+}
+
+// Human-readable edition label parsed from a title.
+function editionLabel(t = '') {
+  const m = t.match(/\b(Deluxe|Ultimate|Definitive|Complete|Remastered|Director'?s Cut|Game of the Year|GOTY)\b/i);
+  if (!m) return 'Standard Edition';
+  let w = m[1];
+  if (/goty|game of the year/i.test(w)) return 'Game of the Year Edition';
+  if (/director/i.test(w)) return "Director's Cut";
+  w = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  return `${w} Edition`;
+}
+
+/* --------------------------------------------------------------------------
+ * 2. UTILITIES
+ * ------------------------------------------------------------------------ */
+
+const $  = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+const money = (n) => (n === 0 || n === '0') ? 'FREE' : `$${Number(n).toFixed(2)}`;
+
+const pct = (retail, sale) => {
+  retail = Number(retail); sale = Number(sale);
+  if (!retail || retail <= 0 || sale >= retail) return 0;
+  return Math.round((1 - sale / retail) * 100);
+};
+
+const escapeHtml = (s = '') =>
+  String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const uid = () => 'g_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+
+const initialsOf = (title = 'Game') =>
+  title.split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase() || 'GM';
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch { return fallback; }
+}
+function saveJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch (e) { console.warn('Persist failed', key, e); }
+}
+
+// Small SVG cover used for compact thumbnails (favorites list, etc.).
+function placeholderCover(title = 'Game', accent = '#8b5cf6') {
+  const initials = initialsOf(title);
+  const t = escapeHtml(title.length > 26 ? title.slice(0, 24) + '…' : title);
+  const svg =
+    `<svg xmlns='http://www.w3.org/2000/svg' width='300' height='420' viewBox='0 0 300 420'>
+      <defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+        <stop offset='0' stop-color='${accent}' stop-opacity='0.9'/>
+        <stop offset='1' stop-color='#12121c'/></linearGradient></defs>
+      <rect width='300' height='420' fill='#12121c'/>
+      <rect width='300' height='420' fill='url(#g)' opacity='0.55'/>
+      <text x='150' y='210' font-family='Segoe UI,sans-serif' font-size='90' font-weight='800'
+        fill='#ffffff' fill-opacity='0.9' text-anchor='middle'>${initials}</text>
+      <text x='150' y='372' font-family='Segoe UI,sans-serif' font-size='17' font-weight='600'
+        fill='#e5e7eb' text-anchor='middle'>${t}</text></svg>`;
+  return 'data:image/svg+xml,' + encodeURIComponent(svg.replace(/\n\s*/g, ' '));
+}
+
+function toast(msg, kind = 'info') {
+  const host = $('#toastHost');
+  const colors = { info: 'border-nexus-cyan', ok: 'border-nexus-green', warn: 'border-amber-400', err: 'border-nexus-red' };
+  const el = document.createElement('div');
+  el.className =
+    `pointer-events-auto px-4 py-2.5 rounded-xl bg-nexus-card border ${colors[kind] || colors.info} ` +
+    `text-sm text-slate-100 shadow-2xl backdrop-blur transition-all duration-300 translate-y-2 opacity-0`;
+  el.textContent = msg;
+  host.appendChild(el);
+  requestAnimationFrame(() => { el.style.transform = 'translateY(0)'; el.style.opacity = '1'; });
+  setTimeout(() => {
+    el.style.opacity = '0'; el.style.transform = 'translateY(8px)';
+    setTimeout(() => el.remove(), 320);
+  }, 2600);
+}
+
+/* --------------------------------------------------------------------------
+ * 3. MOCK / FALLBACK DATA  (console storefronts + Prime + free-to-keep)
+ *    Compact tuple tables -> 30+ real-world high-profile titles per console.
+ *    row = [title, retail, sale, subtypes?, storeOverride?]
+ * ------------------------------------------------------------------------ */
+
+function subTagsFor(subtypes, system) {
+  const t = (subtypes || []).map(s => SUBTAG[s]).filter(Boolean);
+  if (t.length) return t;
+  return [({ pc: 'PC', ps: 'PS5', xbox: 'XSX', switch: 'SW', switch2: 'SW2' })[system] || 'PC'];
+}
+
+function mk(category, system, defStore, rows) {
+  return rows.map((r, i) => {
+    const subtypes = r[3] || [];
+    return {
+      id: `${category}_${i}`,
+      category, system,
+      title: r[0], retail: r[1], sale: r[2],
+      subtypes, tags: subTagsFor(subtypes, system),
+      store: r[4] || defStore,
+    };
+  });
+}
+
+// Permanent Free-to-Play staples — timeless, never expire, always-valid links.
+// (Steam appID -> direct product page & real cover art; others use official URLs.)
+const F2P_GAMES = [
+  { title: 'Fortnite',              tags: ['PC', 'PS5', 'XSX', 'SW'], store: 'Epic Games', url: 'https://store.epicgames.com/en-US/p/fortnite' },
+  { title: 'Apex Legends',          tags: ['PC', 'PS5', 'XSX'],       store: 'Steam', appid: 1172470 },
+  { title: 'Counter-Strike 2',      tags: ['PC'],                     store: 'Steam', appid: 730 },
+  { title: 'Call of Duty: Warzone', tags: ['PC', 'PS5', 'XSX'],       store: 'Battle.net', url: 'https://www.callofduty.com/warzone' },
+  { title: 'Dota 2',                tags: ['PC'],                     store: 'Steam', appid: 570 },
+  { title: 'VALORANT',              tags: ['PC'],                     store: 'Riot Games', url: 'https://playvalorant.com/' },
+  { title: 'Genshin Impact',        tags: ['PC', 'PS5'],              store: 'HoYoverse', url: 'https://genshin.hoyoverse.com/en/download' },
+  { title: 'Rocket League',         tags: ['PC', 'PS5', 'XSX', 'SW'], store: 'Epic Games', url: 'https://www.rocketleague.com/' },
+  { title: 'Warframe',              tags: ['PC', 'PS5', 'XSX', 'SW'], store: 'Steam', appid: 230410 },
+  { title: 'Destiny 2',             tags: ['PC', 'PS5', 'XSX'],       store: 'Steam', appid: 1085660 },
+  { title: 'Path of Exile',         tags: ['PC', 'PS5', 'XSX'],       store: 'Steam', appid: 238960 },
+  { title: 'Marvel Rivals',         tags: ['PC', 'PS5', 'XSX'],       store: 'Steam', appid: 2767030 },
+];
+function mkF2P() {
+  return F2P_GAMES.map((g, i) => ({
+    id: 'f2p_' + i, category: 'f2p', system: 'pc',
+    title: g.title, retail: 0, sale: 0, tags: g.tags, subtypes: [], store: g.store,
+    url: g.url || (g.appid ? `https://store.steampowered.com/app/${g.appid}/` : undefined),
+    imgs: g.appid
+      ? [`https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appid}/library_600x900_2x.jpg`,
+         `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appid}/library_600x900.jpg`,
+         `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appid}/header.jpg`]
+      : [],
+    f2p: true,
+  }));
+}
+
+const MOCK_DEALS = [
+  // NOTE: the "100% Free to Claim" (giveaways) row is populated LIVE from
+  // CheapShark's zero-price feed — no stale hardcoded giveaways that 404.
+
+  /* ---------- 💻 PC (curated fallback if CheapShark is unreachable) ---------- */
+  ...mk('pc', 'pc', 'Steam', [
+    ['Cyberpunk 2077: Ultimate Edition', 79.99, 39.99, [], 'Steam'],
+    ["Baldur's Gate 3",                  59.99, 41.99, [], 'GOG'],
+    ['Elden Ring',                       59.99, 35.99, [], 'Steam'],
+    ['Red Dead Redemption 2',            59.99, 19.79, [], 'Steam'],
+    ['Hogwarts Legacy',                  59.99, 23.99, [], 'Epic Games'],
+    ['Cities: Skylines II',              49.99, 24.99, [], 'Steam'],
+    ['Sons of the Forest',               29.99, 20.99, [], 'Steam'],
+    ['Hades II',                         29.99, 26.99, [], 'Steam'],
+    ['Deep Rock Galactic',               29.99,  9.89, [], 'Steam'],
+    ['Terraria',                          9.99,  4.99, [], 'Steam'],
+  ]),
+
+  /* ---------- 💙 PLAYSTATION LOUNGE (30) ---------- */
+  ...mk('playstation', 'ps', 'PS Store', [
+    ["Marvel's Spider-Man 2",            69.99, 41.99, ['ps5']],
+    ['God of War Ragnarök',              69.99, 34.99, ['ps5', 'ps4']],
+    ['Horizon Forbidden West',           49.99, 19.99, ['ps5', 'ps4']],
+    ['Final Fantasy VII Rebirth',        69.99, 39.99, ['ps5']],
+    ['Ghost of Tsushima Director’s Cut', 59.99, 29.99, ['ps5', 'ps4']],
+    ['The Last of Us Part I',            69.99, 34.99, ['ps5']],
+    ["Demon's Souls",                    69.99, 39.99, ['ps5']],
+    ['Ratchet & Clank: Rift Apart',      69.99, 29.99, ['ps5']],
+    ['Gran Turismo 7',                   69.99, 34.99, ['ps5', 'ps4']],
+    ['Returnal',                         69.99, 29.99, ['ps5']],
+    ["Marvel's Spider-Man: Miles Morales", 49.99, 19.99, ['ps5', 'ps4']],
+    ["Death Stranding Director's Cut",   49.99, 19.99, ['ps5']],
+    ['Uncharted: Legacy of Thieves',     49.99, 24.99, ['ps5']],
+    ['Sackboy: A Big Adventure',         59.99, 24.99, ['ps5', 'ps4']],
+    ['Helldivers 2',                     39.99, 29.99, ['ps5']],
+    ['Stellar Blade',                    69.99, 49.99, ['ps5']],
+    ['Rise of the Ronin',                69.99, 49.99, ['ps5']],
+    ['Astro Bot',                        59.99, 49.99, ['ps5']],
+    ['The Last of Us Part II Remastered', 49.99, 29.99, ['ps5']],
+    ['LEGO Horizon Adventures',          59.99, 39.99, ['ps5', 'ps4']],
+    ['Silent Hill 2',                    69.99, 49.99, ['ps5']],
+    ["Dragon's Dogma 2",                 69.99, 41.99, ['ps5']],
+    ['Elden Ring',                       59.99, 35.99, ['ps5', 'ps4']],
+    ['EA Sports FC 25',                  69.99, 34.99, ['ps5', 'ps4']],
+    ['Call of Duty: Black Ops 6',        69.99, 49.99, ['ps5', 'ps4']],
+    ['God of War (2018)',                19.99,  9.99, ['ps4']],
+    ['Days Gone',                        19.99,  9.99, ['ps4']],
+    ['Bloodborne',                        0,     0,    ['psplus', 'ps4']],
+    ['Horizon Zero Dawn Complete Edition', 0,   0,    ['psplus', 'ps4']],
+    ['Detroit: Become Human',             0,     0,    ['psplus', 'ps4']],
+    // Cross-ecosystem alternate editions (also released Standard on Xbox/PC) —
+    // these surface the multi-edition grouping in the detail modal.
+    ['Cyberpunk 2077: Ultimate Edition', 79.99, 49.99, ['ps5']],
+    ['Hogwarts Legacy: Deluxe Edition',  69.99, 34.99, ['ps5', 'ps4']],
+    ['Elden Ring: Deluxe Edition',       79.99, 49.99, ['ps5']],
+  ]),
+
+  /* ---------- 💚 XBOX ARENA (30) ---------- */
+  ...mk('xbox', 'xbox', 'Xbox Store', [
+    ['Starfield',                        69.99, 34.99, ['series', 'gamepass']],
+    ['Forza Horizon 5',                  59.99, 23.99, ['series', 'one', 'gamepass']],
+    ['Halo Infinite',                    59.99, 19.79, ['series', 'one', 'gamepass']],
+    ['Sea of Thieves',                   39.99, 15.99, ['series', 'one', 'gamepass']],
+    ['Diablo IV',                        69.99, 27.99, ['series', 'gamepass']],
+    ['Forza Motorsport',                 69.99, 41.99, ['series', 'gamepass']],
+    ['Microsoft Flight Simulator 2024',  69.99, 49.99, ['series', 'gamepass']],
+    ['Gears 5',                          29.99,  9.89, ['series', 'one', 'gamepass']],
+    ['Age of Empires IV',                39.99, 19.99, ['series', 'gamepass']],
+    ["Senua's Saga: Hellblade II",       49.99, 39.99, ['series', 'gamepass']],
+    ['Avowed',                           69.99, 49.99, ['series', 'gamepass']],
+    ['State of Decay 2',                 29.99,  8.99, ['series', 'one', 'gamepass']],
+    ['Ori and the Will of the Wisps',    29.99,  9.99, ['series', 'one', 'gamepass']],
+    ['Grounded',                         39.99, 19.99, ['series', 'one', 'gamepass']],
+    ['Pentiment',                        19.99, 13.99, ['series', 'gamepass']],
+    ['Call of Duty: Black Ops 6',        69.99, 49.99, ['series', 'gamepass']],
+    ['EA Sports FC 25',                  69.99, 34.99, ['series', 'one']],
+    ['Mortal Kombat 1',                  69.99, 29.99, ['series']],
+    ['Cyberpunk 2077',                   59.99, 29.99, ['series', 'one']],
+    ['Elden Ring',                       59.99, 41.99, ['series', 'one']],
+    ['Red Dead Redemption 2',            59.99, 19.79, ['series', 'one']],
+    ["Baldur's Gate 3",                  59.99, 47.99, ['series']],
+    ['Assassin’s Creed Mirage',          49.99, 24.99, ['series', 'one']],
+    ['Hogwarts Legacy',                  59.99, 23.99, ['series', 'one']],
+    ['It Takes Two',                     39.99, 15.99, ['series', 'one', 'gamepass']],
+    ['Palworld',                         29.99, 26.99, ['series', 'gamepass']],
+    ['The Elder Scrolls V: Skyrim AE',   49.99, 19.99, ['series', 'one']],
+    ['Dead Space',                       59.99, 23.99, ['series']],
+    ['Resident Evil 4',                  59.99, 23.99, ['series']],
+    ['Star Wars Jedi: Survivor',         69.99, 27.99, ['series']],
+  ]),
+
+  /* ---------- 🛑 NINTENDO eSHOP (30 · Switch 1 & Switch 2) ---------- */
+  ...mk('nintendo', 'switch', 'eShop', [
+    ['The Legend of Zelda: Tears of the Kingdom', 69.99, 49.99, ['switch2', 'switch']],
+    ['Super Mario Odyssey',              59.99, 39.99, ['switch']],
+    ['Mario Kart World',                 79.99, 69.99, ['switch2']],
+    ['Metroid Dread',                    59.99, 29.99, ['switch']],
+    ['Pikmin 4',                         59.99, 39.99, ['switch', 'switch2']],
+    ['The Legend of Zelda: Breath of the Wild', 59.99, 39.99, ['switch']],
+    ['Super Mario Bros. Wonder',         59.99, 44.99, ['switch', 'switch2']],
+    ['Super Smash Bros. Ultimate',       59.99, 49.99, ['switch']],
+    ['Animal Crossing: New Horizons',    59.99, 39.99, ['switch']],
+    ['Splatoon 3',                       59.99, 39.99, ['switch']],
+    ['Super Mario Party Jamboree',       59.99, 49.99, ['switch', 'switch2']],
+    ["Luigi's Mansion 3",                59.99, 39.99, ['switch']],
+    ['Kirby and the Forgotten Land',     59.99, 39.99, ['switch', 'switch2']],
+    ['Xenoblade Chronicles 3',           59.99, 39.99, ['switch']],
+    ['Fire Emblem Engage',               59.99, 29.99, ['switch']],
+    ['Mario + Rabbids Sparks of Hope',   59.99, 14.99, ['switch', 'eshop']],
+    ['Bayonetta 3',                      59.99, 39.99, ['switch']],
+    ['Donkey Kong Country Returns HD',   59.99, 49.99, ['switch', 'switch2']],
+    ['Paper Mario: The Thousand-Year Door', 59.99, 49.99, ['switch']],
+    ['Princess Peach: Showtime!',        59.99, 39.99, ['switch']],
+    ['Metroid Prime Remastered',         39.99, 29.99, ['switch']],
+    ['The Legend of Zelda: Echoes of Wisdom', 59.99, 49.99, ['switch', 'switch2']],
+    ['Hollow Knight',                    14.99,  7.49, ['switch', 'eshop']],
+    ['Stardew Valley',                   14.99, 11.24, ['switch', 'eshop']],
+    ['Hades',                            24.99, 12.49, ['switch', 'eshop']],
+    ['Dead Cells',                       24.99, 12.49, ['switch', 'eshop']],
+    ['Cuphead',                          19.99, 13.39, ['switch', 'eshop']],
+    ['Celeste',                          19.99,  4.99, ['switch', 'eshop']],
+    ['Octopath Traveler II',             59.99, 41.99, ['switch']],
+    ['Sea of Stars',                     34.99, 24.49, ['switch', 'switch2', 'eshop']],
+  ]),
+
+  /* ---------- 🎮 FREE-TO-PLAY STAPLES (permanent, never expire) ---------- */
+  ...mkF2P(),
+];
+
+/* --------------------------------------------------------------------------
+ * 4. NEXUS DATA ENGINE
+ * ------------------------------------------------------------------------ */
+
+class NexusDataEngine {
+  constructor() {
+    this.deals = [];
+    this.usedFallback = false;
+    this.liveCount = 0;
+    this.page = 0;
+    this.hasMore = true;
+    this._seen = new Set();     // lowercased titles across all live pages
+  }
+
+  static normalize(raw) {
+    const retail = Number(raw.retail ?? raw.normalPrice ?? 0);
+    const sale   = Number(raw.sale   ?? raw.salePrice   ?? retail);
+    const accent = (CATEGORIES.find(c => c.id === raw.category) || {}).accent || '#8b5cf6';
+    const base = baseTitle(raw.title || '');
+    const appid = STEAM_APPID[base];
+    let imgs = Array.isArray(raw.imgs) ? raw.imgs.slice() : [];
+    if (!imgs.length && raw.img) imgs = [raw.img];
+    // Metadata fallback: pull real cover art for known titles that shipped with
+    // no image (console/mock cards), so we don't fall back to text initials.
+    if (!imgs.length) {
+      const atlas = atlasLookup(raw.title || '');
+      if (atlas) {
+        imgs = [atlas];
+      } else if (appid) {
+        const b = `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}`;
+        imgs = [`${b}/library_600x900_2x.jpg`, `${b}/library_600x900.jpg`, `${b}/header.jpg`];
+      } else if (typeof State !== 'undefined' && State.meta && State.meta[base] && State.meta[base].background) {
+        imgs = [State.meta[base].background];
+      }
+    }
+    // Deep merchant link: honor an explicit url (e.g. CheapShark tracking redirect),
+    // otherwise synthesize a direct product/search link — never a bare homepage.
+    const url = (raw.url && raw.url !== '#')
+      ? raw.url
+      : storeLink(raw.store || '', raw.title || '', raw.category || '', raw.system || '', appid);
+    return {
+      id:       raw.id || uid(),
+      category: raw.category || 'pc',
+      system:   raw.system || 'pc',
+      title:    raw.title || 'Untitled Game',
+      tags:     Array.isArray(raw.tags) && raw.tags.length ? raw.tags : ['PC'],
+      subtypes: Array.isArray(raw.subtypes) ? raw.subtypes : [],
+      store:    raw.store || 'Store',
+      retail,
+      sale,
+      discount: pct(retail, sale),
+      imgs,
+      img:      imgs[0] || placeholderCover(raw.title, accent),
+      url,
+      source:   raw.source || 'mock',
+      fullPrice: !!raw.fullPrice,
+      f2p:      !!raw.f2p,
+      gameID:    raw.gameID,
+      steamAppID: raw.steamAppID,
+    };
+  }
+
+  // Build a hi-res candidate list from a CheapShark record. We prefer vertical
+  // Steam "library" capsule art, then header art, then a regex-upgraded thumb,
+  // then the raw thumb — the card walks this list on each <img> error.
+  static fromCheapShark(d) {
+    const sale   = Number(d.salePrice);
+    const retail = Number(d.normalPrice);
+    const imgs = [];
+    if (d.steamAppID) {
+      const base = `https://cdn.cloudflare.steamstatic.com/steam/apps/${d.steamAppID}`;
+      imgs.push(`${base}/library_600x900_2x.jpg`, `${base}/library_600x900.jpg`, `${base}/header.jpg`);
+    }
+    if (d.thumb) {
+      // Regex URL manipulator: swap the tiny capsule slug for hi-res variants.
+      imgs.push(d.thumb.replace(/capsule_sm_120|capsule_231x87/g, 'library_600x900'));
+      imgs.push(d.thumb.replace(/capsule_sm_120|capsule_231x87/g, 'capsule_616x353'));
+      imgs.push(d.thumb);
+    }
+    return NexusDataEngine.normalize({
+      id: 'cs_' + d.dealID,
+      category: sale === 0 ? 'free' : 'pc',
+      system: 'pc',
+      title: d.title,
+      tags: ['PC'],
+      store: sale === 0 ? 'Free · Steam' : 'Steam',
+      retail, sale, imgs,
+      // NOTE: CheapShark's dealID arrives ALREADY url-encoded (contains %2F/%3D).
+      // Re-encoding it double-escapes the token and the redirect 404s back to the
+      // homepage — so we pass dealID through verbatim to land on the real store.
+      url: 'https://www.cheapshark.com/redirect?dealID=' + d.dealID,
+      source: 'cheapshark',
+      gameID: d.gameID,
+    });
+  }
+
+  async fetchPage(page, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(cheapSharkUrl(page), { signal: controller.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (!Array.isArray(data)) throw new Error('bad payload');
+      return data;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // De-dupe a raw CheapShark array against titles already seen, map to schema.
+  _ingest(rawArray) {
+    const out = [];
+    for (const d of rawArray) {
+      const key = (d.title || '').toLowerCase();
+      if (!key || this._seen.has(key)) continue;
+      this._seen.add(key);
+      out.push(NexusDataEngine.fromCheapShark(d));
+    }
+    return out;
+  }
+
+  async load() {
+    this.page = 0;
+    this.hasMore = true;
+    this._seen = new Set();
+    let liveDeals = [];
+    try {
+      const raw = await this.fetchPage(0);
+      if (!raw.length) throw new Error('empty payload');
+      // Only paid PC deals belong in the PC row (sale > 0). $0 items are giveaways.
+      liveDeals = this._ingest(raw).filter(d => d.sale > 0);
+      this.liveCount = liveDeals.length;
+      if (raw.length < CHEAPSHARK_PAGE_SIZE) this.hasMore = false;
+    } catch (err) {
+      console.warn('[NexusDataEngine] Live PC feed unavailable, using fallback:', err.message);
+      this.usedFallback = true;
+      this.hasMore = false;
+    }
+
+    // Live limited-time giveaways (separate zero-price feed).
+    let giveaways = [];
+    try {
+      giveaways = await NexusDataEngine.fetchFreeGiveaways();
+    } catch (e) {
+      console.warn('[NexusDataEngine] giveaway feed unavailable:', e.message);
+    }
+
+    const mock = MOCK_DEALS.map(NexusDataEngine.normalize); // F2P staples + console + curated PC
+
+    if (liveDeals.length || giveaways.length) {
+      // Live PC deals supersede the curated PC row; console + F2P stay curated.
+      const nonPcMock = mock.filter(d => d.category !== 'pc' && d.category !== 'free');
+      this.deals = [...giveaways, ...liveDeals, ...nonPcMock];
+    } else {
+      this.deals = mock; // offline: F2P + console + curated PC (no stale giveaways)
+    }
+    return this.deals;
+  }
+
+  // Live "100% Free to Claim" giveaways — CheapShark zero-price feed. Strictly
+  // premium games temporarily marked to $0 (spec filter: price === 0 && retail > 0),
+  // which guarantees permanent Free-to-Play titles never leak into this row.
+  static async fetchFreeGiveaways(timeoutMs = 7000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch('https://www.cheapshark.com/api/1.0/deals?upperPrice=0&pageSize=20&sortBy=recent', { signal: controller.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const arr = await res.json();
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .filter(d => parseFloat(d.salePrice) === 0 && parseFloat(d.normalPrice) > 0)
+        .map(d => NexusDataEngine.fromCheapShark(d));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Global encyclopedia search — CheapShark /games returns titles regardless of
+  // sale status, so full-price games become searchable & bookmarkable.
+  // NOTE: correct endpoint is /api/1.0/games?title= (not the malformed
+  // `cheapshark.com{query}` string); returns {gameID,steamAppID,external,thumb,cheapest}.
+  static async searchGames(query, timeoutMs = 7000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const url = `https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(query)}&limit=20`;
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const arr = await res.json();
+      if (!Array.isArray(arr)) return [];
+      return arr.map(g => {
+        const imgs = [];
+        if (g.steamAppID) {
+          const b = `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.steamAppID}`;
+          imgs.push(`${b}/library_600x900_2x.jpg`, `${b}/library_600x900.jpg`, `${b}/header.jpg`);
+        }
+        if (g.thumb) imgs.push(g.thumb.replace(/capsule_sm_120|capsule_231x87/g, 'library_600x900'), g.thumb);
+        const price = Number(g.cheapest) || 0;
+        return NexusDataEngine.normalize({
+          id: 'csg_' + g.gameID,
+          category: 'search',
+          system: 'pc',
+          title: g.external,
+          tags: ['PC'],
+          store: 'CheapShark',
+          retail: price, sale: price,     // shown as full price — not an active discount
+          imgs,
+          url: g.steamAppID
+            ? `https://store.steampowered.com/app/${g.steamAppID}/`
+            : `https://www.cheapshark.com/browse?title=${encodeURIComponent(g.external)}`,
+          source: 'encyclopedia',
+          fullPrice: true,
+          gameID: g.gameID,
+          steamAppID: g.steamAppID,
+        });
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Fetch the next CheapShark page (PC + any free-to-keep). Returns new deals.
+  async loadMore() {
+    if (!this.hasMore || this.usedFallback) return [];
+    const nextPage = this.page + 1;
+    const raw = await this.fetchPage(nextPage);
+    this.page = nextPage;
+    const fresh = this._ingest(raw).filter(d => d.sale > 0); // paid PC deals only
+    if (raw.length < CHEAPSHARK_PAGE_SIZE) this.hasMore = false;
+    this.liveCount += fresh.length;
+    return fresh;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 5. APPLICATION STATE
+ * ------------------------------------------------------------------------ */
+
+const State = {
+  engine: new NexusDataEngine(),
+  deals: [],
+  manual: loadJSON(STORAGE.manual, []),
+  favorites: loadJSON(STORAGE.favorites, {}),
+  library: loadJSON(STORAGE.library, []),
+  meta: loadJSON(STORAGE.meta, {}),
+  booted: false,
+  loadingMore: false,
+  activeDetail: null,
+  coop: { friends: [] },   // [{ label, titles: [] }] imported friend libraries
+  searchResults: [],       // encyclopedia (full-price) results for current query
+  priceDrops: new Set(),   // normalized titles of favorites with a live cheaper deal
+  histCache: {},           // gameID/title -> { price, date, store } historical low
+  pushed: 0,               // pseudo history-state depth for modal back-gesture guard
+  filters: {
+    systems: new Set(SYSTEMS.map(s => s.id)),
+    freeOnly: false,
+    search: '',
+    favPlatform: 'all',
+    subFilter: { playstation: 'all', xbox: 'all', nintendo: 'all' },
+    // Multi-select store separation for the PC & Free (subscription) sections.
+    storeFilter: { free: new Set(), pc: new Set() },
+  },
+
+  persist() {
+    saveJSON(STORAGE.favorites, this.favorites);
+    saveJSON(STORAGE.library, this.library);
+    saveJSON(STORAGE.manual, this.manual);
+  },
+
+  allDeals() {
+    const manual = this.manual.map(NexusDataEngine.normalize);
+    return [...manual, ...this.deals];
+  },
+
+  isFavorite(id) { return !!this.favorites[id]; },
+  isOwned(title) {
+    const t = (title || '').trim().toLowerCase();
+    return this.library.some(g => (g.title || '').trim().toLowerCase() === t);
+  },
+};
+
+/* --------------------------------------------------------------------------
+ * 6. FILTER LOGIC
+ * ------------------------------------------------------------------------ */
+
+function systemMeta(id) { return SYSTEMS.find(s => s.id === id) || SYSTEMS[0]; }
+function categoryMeta(id) { return CATEGORIES.find(c => c.id === id) || CATEGORIES[1]; }
+
+function subtypeMatch(deal, cat, val) {
+  if (!val || val === 'all') return true;
+  if (cat === 'free' || cat === 'pc') {
+    return (deal.store || '').toLowerCase().includes(val.toLowerCase());
+  }
+  const subs = (deal.subtypes && deal.subtypes.length) ? deal.subtypes : [];
+  return subs.includes(val);
+}
+
+function storeMatch(deal, set) {
+  if (!set || !set.size) return true;
+  const store = (deal.store || '').toLowerCase();
+  return [...set].some(v => store.includes(v.toLowerCase()));
+}
+
+function dealPasses(deal) {
+  const cat = categoryMeta(deal.category);
+  if (!cat.systems.some(s => State.filters.systems.has(s))) return false;
+  if (State.filters.freeOnly && deal.sale !== 0) return false;
+  if (State.filters.search && !deal.title.toLowerCase().includes(State.filters.search)) return false;
+  if (deal.category === 'free' || deal.category === 'pc') {
+    if (!storeMatch(deal, State.filters.storeFilter[deal.category])) return false;
+  } else {
+    const sub = State.filters.subFilter[deal.category] || 'all';
+    if (!subtypeMatch(deal, deal.category, sub)) return false;
+  }
+  return true;
+}
+
+/* --------------------------------------------------------------------------
+ * 7. RENDERING
+ * ------------------------------------------------------------------------ */
+
+// Strip edition sub-titles so title→cover CDN matching succeeds more often.
+function cleanTitleForSearch(t = '') {
+  return t
+    .replace(/[:\-–—]\s*(game of the year|goty|definitive|director'?s cut|complete|remastered|deluxe|ultimate|enhanced|standard|anniversary|legendary)\b.*$/i, '')
+    .replace(/\b(game of the year edition|goty edition|definitive edition|director'?s cut|complete edition|remastered|deluxe edition|ultimate edition|enhanced edition|anniversary edition|legendary edition)\b/ig, '')
+    .replace(/\s{2,}/g, ' ').trim();
+}
+
+// Multi-tier cover-art harvester.
+//   Tier 1: Steam library capsule from a known steamAppID (built into deal.imgs).
+//   Tier 2: keyless title→steamAppID lookup via CheapShark, then Steam capsule.
+//   Tier 3: premium CSS fallback frame (handled by the .cover-fallback element).
+const ImageHarvester = {
+  _appid: {},        // cleanedTitleLower -> steamAppID | null (resolved)
+  _inflight: {},     // cleanedTitleLower -> Promise
+  _io: null,
+  steamArt(appid, hi = true) {
+    return `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/library_600x900${hi ? '_2x' : ''}.jpg`;
+  },
+  findAppId(title) {
+    const clean = cleanTitleForSearch(title);
+    const key = clean.toLowerCase();
+    if (key in this._appid) return Promise.resolve(this._appid[key]);
+    if (this._inflight[key]) return this._inflight[key];
+    const p = (async () => {
+      try {
+        const results = await NexusDataEngine.searchGames(clean);
+        const target = normTitle(clean);
+        const exact = results.find(r => r.steamAppID && normTitle(cleanTitleForSearch(r.title)) === target);
+        const any = results.find(r => r.steamAppID);
+        const appid = (exact || any) ? (exact || any).steamAppID : null;
+        this._appid[key] = appid;
+        return appid;
+      } catch { this._appid[key] = null; return null; }
+      finally { delete this._inflight[key]; }
+    })();
+    this._inflight[key] = p;
+    return p;
+  },
+  // Tier 2.5: keyless, CORS-enabled (origin=*) Wikipedia box-art lookup for
+  // console/Nintendo exclusives absent from Steam. Conservative — only accepts a
+  // confidently cover-named file so it never surfaces a screenshot.
+  _wiki: {},
+  async findWikipediaCover(title) {
+    const clean = cleanTitleForSearch(title);
+    const key = clean.toLowerCase();
+    if (key in this._wiki) return this._wiki[key];
+    const api = 'https://en.wikipedia.org/w/api.php';
+    try {
+      const j = await fetch(`${api}?action=query&format=json&origin=*&redirects=1&prop=images&imlimit=60&titles=${encodeURIComponent(clean)}`).then(r => r.json());
+      const pg = Object.values(j.query.pages)[0];
+      const files = (pg && pg.images ? pg.images.map(i => i.title) : []).filter(t => /\.(jpe?g|png)$/i.test(t) && !/\.svg/i.test(t));
+      // Keep only meaningful title words (drop single letters like the "s" in "Luigi's").
+      const titleWords = clean.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 2 || /\d/.test(w));
+      const score = (t) => {
+        const fname = t.replace(/^File:/i, '').replace(/\.(jpe?g|png)$/i, '').toLowerCase();
+        let s = 0;
+        if (/cover|box ?art|boxart|key ?art/.test(fname)) s += 6;
+        // A box-art file name is basically JUST the title; a screenshot adds many
+        // descriptive words. Measure the "extra" text beyond the title words.
+        let extra = fname.replace(/[^a-z0-9]+/g, ' ');
+        titleWords.forEach(w => { extra = extra.split(w).join(' '); });
+        extra = extra.replace(/\b(cover|box|art|boxart|edition|hd|the|of)\b/g, '').replace(/[^a-z0-9]/g, '');
+        if (extra.length <= 3) s += 5;        // filename ≈ title -> box art
+        else if (extra.length > 12) s -= 6;   // lots of extra words -> a scene/screenshot
+        if (/logo|icon|screenshot|gameplay|banner|e3|gdc|cropped|booth|photo|map|font|award|wallpaper|fighting|scene|trailer|promo|render/.test(fname)) s -= 8;
+        return s;
+      };
+      files.sort((a, b) => score(b) - score(a));
+      if (!files[0] || score(files[0]) < 5) { this._wiki[key] = null; return null; }
+      const ij = await fetch(`${api}?action=query&format=json&origin=*&prop=imageinfo&iiprop=url&iiurlwidth=600&titles=${encodeURIComponent(files[0])}`).then(r => r.json());
+      const ip = Object.values(ij.query.pages)[0];
+      const url = ip.imageinfo && ip.imageinfo[0] && (ip.imageinfo[0].thumburl || ip.imageinfo[0].url);
+      this._wiki[key] = url || null;
+      return this._wiki[key];
+    } catch { this._wiki[key] = null; return null; }
+  },
+  // Unified cover router: atlas → Steam capsule → Wikipedia → null (Tier 3).
+  async resolve(title) {
+    const atlas = atlasLookup(title);
+    if (atlas) return atlas;
+    const appid = await this.findAppId(title);
+    if (appid) return this.steamArt(appid, true);
+    return this.findWikipediaCover(title);
+  },
+  // Harvest a cover for a fallback frame that has no Tier-1 art.
+  async harvestFrame(frame) {
+    if (!frame || frame.dataset.harvestDone === '1') return;
+    frame.dataset.harvestDone = '1';
+    const title = frame.dataset.harvest;
+    const url = await this.resolve(title);
+    if (!url) return; // keep Tier 3 fallback
+    const holder = frame.querySelector('.cover-holder') || frame;
+    const img = document.createElement('img');
+    img.className = 'w-full h-full object-cover relative z-[1]';
+    img.loading = 'lazy';
+    img.alt = title + ' cover';
+    img.dataset.title = title;
+    img.dataset.harvested = '1';        // already resolved — don't re-harvest on error
+    img.dataset.srcs = JSON.stringify([url]);
+    img.dataset.idx = '0';
+    img.onerror = () => nexusImgErr(img);
+    img.onload = () => { const fb = frame.querySelector('.cover-fallback'); if (fb) fb.style.display = 'none'; };
+    img.src = url;
+    holder.appendChild(img);
+  },
+  // Lazily harvest only cards that scroll into view (perf across thousands).
+  observeAll() {
+    if (!('IntersectionObserver' in window)) {
+      $$('[data-harvest]').forEach(f => this.harvestFrame(f));
+      return;
+    }
+    if (!this._io) {
+      this._io = new IntersectionObserver((entries) => {
+        entries.forEach(e => { if (e.isIntersecting) { this.harvestFrame(e.target); this._io.unobserve(e.target); } });
+      }, { rootMargin: '300px' });
+    }
+    $$('[data-harvest]').forEach(f => {
+      if (f.dataset.harvestObs !== '1') { f.dataset.harvestObs = '1'; this._io.observe(f); }
+    });
+  },
+};
+
+// Global <img> error walker — Tier-1 candidates → Tier-2 harvest → Tier-3 CSS frame.
+function nexusImgErr(img) {
+  try {
+    const srcs = JSON.parse(img.dataset.srcs || '[]');
+    const next = parseInt(img.dataset.idx || '0', 10) + 1;
+    if (next < srcs.length) { img.dataset.idx = String(next); img.src = srcs[next]; return; }
+  } catch { /* fall through */ }
+  // Tier 2/2.5: harvest a cover by title (atlas → Steam → Wikipedia), once per image.
+  if (img.dataset.harvested !== '1' && img.dataset.title) {
+    img.dataset.harvested = '1';
+    ImageHarvester.resolve(img.dataset.title).then(url => {
+      if (url) {
+        img.dataset.srcs = JSON.stringify([url]);
+        img.dataset.idx = '0';
+        img.style.display = '';
+        img.src = url;
+      } else { nexusImgErr(img); }
+    }).catch(() => nexusImgErr(img));
+    return;
+  }
+  // Tier 3: reveal the premium CSS fallback frame.
+  img.style.display = 'none';
+  const fb = img.closest('.cover-frame')?.querySelector('.cover-fallback');
+  if (fb) fb.style.display = 'flex';
+}
+window.nexusImgErr = nexusImgErr;
+
+function cardHTML(deal) {
+  const fav = State.isFavorite(deal.id);
+  const owned = State.isOwned(deal.title);
+  const cat = categoryMeta(deal.category);
+  const isFree = deal.sale === 0;
+  const imgs = Array.isArray(deal.imgs) ? deal.imgs.filter(u => u && !u.startsWith('data:')) : [];
+
+  const tagBadges = deal.tags.map(t =>
+    `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide bg-nexus-bg/70 border border-nexus-border text-slate-300">${escapeHtml(t)}</span>`
+  ).join('');
+
+  const priceBlock = deal.f2p
+    ? `<span class="text-blue-400 font-extrabold text-lg drop-shadow-[0_0_8px_rgba(59,130,246,.5)]">Free to Play</span>`
+    : isFree
+    ? `<span class="text-nexus-green font-extrabold text-lg drop-shadow-[0_0_8px_rgba(34,197,94,.5)]">FREE</span>`
+    : deal.fullPrice
+    ? `<span class="text-slate-200 font-extrabold text-lg">${money(deal.sale)}</span>
+       <span class="block text-[10px] text-amber-400/90 font-semibold">Full retail price</span>`
+    : `<span class="text-slate-500 line-through text-xs decoration-nexus-red/80 decoration-2">${money(deal.retail)}</span>
+       <span class="text-nexus-green font-extrabold text-lg ml-1.5">${money(deal.sale)}</span>`;
+
+  const discountBadge = deal.f2p
+    ? `<div class="absolute top-2 left-2 z-[2] px-2 py-1 rounded-md text-[10px] font-black text-white bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,.6)]">FREE-TO-PLAY</div>`
+    : deal.fullPrice
+    ? `<div class="absolute top-2 left-2 z-[2] px-2 py-1 rounded-md text-[10px] font-black text-nexus-bg bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,.5)]">NOT ON SALE</div>`
+    : (deal.discount > 0 || isFree)
+    ? `<div class="absolute top-2 left-2 z-[2] px-2 py-1 rounded-md text-xs font-black text-nexus-bg bg-nexus-green shadow-[0_0_12px_rgba(34,197,94,.6)]">
+         ${isFree ? '100% OFF' : '-' + deal.discount + '%'}</div>`
+    : '';
+
+  // Favorites watchlist: flash a price-drop notice when a bookmarked title now
+  // has a live cheaper/active deal.
+  const priceDropBadge = State.priceDrops.has(normTitle(deal.title))
+    ? `<div class="price-drop-flash absolute top-9 left-2 z-[3] px-2 py-1 rounded-md text-[10px] font-black text-white bg-nexus-red">🔥 PRICE DROP NOTICE</div>`
+    : '';
+
+  // Tier 3 — premium CSS fallback frame: dark material gradient, system console
+  // emblem, bold title, and a neon inset border matching the system ecosystem.
+  const sys = systemMeta(deal.system);
+  const fallbackHTML = `
+    <div class="cover-fallback absolute inset-0 flex-col justify-between p-3 rounded-2xl"
+         style="display:${imgs.length ? 'none' : 'flex'};
+           background:
+             radial-gradient(120% 85% at 50% 0%, ${cat.accent}44 0%, transparent 55%),
+             linear-gradient(160deg, #1b1b2e 0%, #0c0c14 100%);
+           box-shadow: inset 0 0 0 2px ${sys.color}55, inset 0 0 22px -6px ${sys.color};">
+      <div class="flex justify-between items-start">
+        <span class="text-lg drop-shadow" title="${escapeHtml(sys.label)}">${sys.emoji}</span>
+        <span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-black/40 border border-white/10"
+              style="color:${sys.color}">${escapeHtml(deal.tags[0] || '')}</span>
+      </div>
+      <div class="absolute inset-0 grid place-items-center pointer-events-none">
+        <span class="text-6xl font-black opacity-[0.14] select-none" style="color:${sys.color}">${escapeHtml(initialsOf(deal.title))}</span>
+      </div>
+      <div class="relative z-[1]">
+        <div class="text-sm font-extrabold leading-tight text-slate-100 drop-shadow-lg clamp-2">${escapeHtml(deal.title)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${escapeHtml(deal.store)}</div>
+      </div>
+    </div>`;
+
+  const imgTag = imgs.length
+    ? `<img src="${escapeHtml(imgs[0])}" data-srcs='${escapeHtml(JSON.stringify(imgs))}' data-idx="0"
+         data-title="${escapeHtml(deal.title)}" alt="${escapeHtml(deal.title)} cover" loading="lazy"
+         class="w-full h-full object-cover relative z-[1]" onerror="nexusImgErr(this)" />`
+    : '';
+
+  return `
+  <article class="deal-card anim-in group relative flex flex-col rounded-2xl bg-nexus-card border border-nexus-border overflow-hidden"
+           data-id="${deal.id}">
+    <div class="cover-frame relative aspect-[2/3] bg-nexus-bg shadow-lg"${imgs.length ? '' : ` data-harvest="${escapeHtml(deal.title)}"`}>
+      <div class="cover-holder block w-full h-full">
+        ${fallbackHTML}
+        ${imgTag}
+      </div>
+      ${discountBadge}
+      ${priceDropBadge}
+      <button data-fav="${deal.id}" title="Toggle favorite"
+        class="absolute top-2 right-2 z-[2] w-8 h-8 grid place-items-center rounded-full backdrop-blur
+               ${fav ? 'bg-nexus-violet text-white shadow-glow-soft' : 'bg-black/50 text-slate-300 hover:text-white'} transition">
+        <span class="text-sm">${fav ? '★' : '☆'}</span>
+      </button>
+      <div class="absolute bottom-2 left-2 z-[2] px-2 py-0.5 rounded-md text-[10px] font-semibold bg-black/60 backdrop-blur text-slate-200 border border-white/10">
+        ${escapeHtml(deal.store)}
+      </div>
+    </div>
+
+    <div class="p-3 flex flex-col gap-2 flex-1">
+      <h3 class="font-bold text-sm leading-snug clamp-2 min-h-[2.4em]" title="${escapeHtml(deal.title)}">${escapeHtml(deal.title)}</h3>
+      <div class="flex flex-wrap gap-1">${tagBadges}</div>
+      <div class="mt-auto flex items-end justify-between pt-1">
+        <div class="leading-none">${priceBlock}</div>
+      </div>
+      <button data-own="${deal.id}"
+        class="mt-1 w-full py-1.5 rounded-lg text-xs font-bold transition border
+               ${owned ? 'bg-nexus-cyan/15 border-nexus-cyan text-nexus-cyan'
+                       : 'bg-nexus-bg border-nexus-border text-slate-300 hover:border-nexus-cyan hover:text-white'}">
+        ${owned ? '✓ In Library' : '+ Mark Owned'}
+      </button>
+    </div>
+  </article>`;
+}
+
+function sectionHTML(cat, items) {
+  let filterControl = '';
+
+  if (cat.id === 'free' || cat.id === 'pc') {
+    // PC/subscription store-separation checkbox row.
+    const set = State.filters.storeFilter[cat.id];
+    const boxes = STORE_CHECKS.map(o => {
+      const on = set.has(o.v);
+      return `
+      <label class="sub-store flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs cursor-pointer select-none transition ${on ? 'text-white font-semibold' : 'text-slate-400'}"
+             style="border-color:${on ? cat.accent : '#25253a'};background:${on ? cat.accent + '1f' : 'transparent'}">
+        <input type="checkbox" data-store-check="${cat.id}" value="${o.v}" ${on ? 'checked' : ''}
+               class="w-3.5 h-3.5" style="accent-color:${cat.accent}">
+        <span>${o.emoji} ${escapeHtml(o.l)}</span>
+      </label>`;
+    }).join('');
+    filterControl = `<div class="flex flex-wrap items-center gap-1.5">${boxes}</div>`;
+  } else {
+    // Console dropdown sub-filter.
+    const subs = SUBFILTERS[cat.id];
+    const cur = State.filters.subFilter[cat.id] || 'all';
+    filterControl = subs ? `
+      <select data-subfilter="${cat.id}"
+        class="bg-nexus-bg border rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none cursor-pointer transition"
+        style="border-color:${cat.accent}55">
+        ${subs.map(o => `<option value="${o.v}" ${o.v === cur ? 'selected' : ''}>${escapeHtml(o.l)}</option>`).join('')}
+      </select>` : '';
+  }
+
+  return `
+  <section data-cat="${cat.id}">
+    <div class="flex items-end justify-between mb-4 flex-wrap gap-3">
+      <div>
+        <h2 class="text-xl sm:text-2xl font-extrabold flex items-center gap-2.5" style="text-shadow:0 0 22px ${cat.accent}55">
+          <span>${cat.emoji}</span><span>${escapeHtml(cat.title)}</span>
+        </h2>
+        <p class="text-xs text-slate-500 mt-0.5 ml-9">${escapeHtml(cat.blurb)}</p>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        ${filterControl}
+        <span data-count-badge="${cat.id}" class="text-xs font-semibold px-2.5 py-1 rounded-full border whitespace-nowrap"
+              style="color:${cat.accent};border-color:${cat.accent}55;background:${cat.accent}12">
+          ${items.length} title${items.length === 1 ? '' : 's'}
+        </span>
+      </div>
+    </div>
+    <div data-grid class="grid grid-cols-1 min-[400px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 sm:gap-4">
+      ${items.map(cardHTML).join('')}
+    </div>
+  </section>`;
+}
+
+// Favorites watchlist monitor: flag bookmarked titles that now have a live,
+// cheaper/active deal so the card can flash a "PRICE DROP NOTICE".
+function detectPriceDrops() {
+  const drops = new Set();
+  Object.values(State.favorites).forEach(f => {
+    const deal = State.deals.find(d => normTitle(d.title) === normTitle(f.title) && (d.discount > 0 || d.sale === 0));
+    if (deal) {
+      const favSale = (typeof f.sale === 'number') ? f.sale : Infinity;
+      if (f.fullPrice || deal.sale < favSale) drops.add(normTitle(f.title));
+    }
+  });
+  State.priceDrops = drops;
+}
+
+// Encyclopedia (full-price) search results section — only while searching.
+function renderSearchSectionHTML(visibleTitles) {
+  if (!State.filters.search || !State.searchResults.length) return '';
+  const items = State.searchResults.filter(d => !visibleTitles.has(normTitle(d.title)));
+  if (!items.length) return '';
+  const accent = '#f59e0b';
+  return `
+  <section data-cat="search">
+    <div class="flex items-end justify-between mb-4 flex-wrap gap-3">
+      <div>
+        <h2 class="text-xl sm:text-2xl font-extrabold flex items-center gap-2.5" style="text-shadow:0 0 22px ${accent}55">
+          <span>🔎</span><span>Global Search Results</span>
+        </h2>
+        <p class="text-xs text-slate-500 mt-0.5 ml-9">Full-catalog matches (incl. full-price titles) via CheapShark — bookmark to watch for drops.</p>
+      </div>
+      <span class="text-xs font-semibold px-2.5 py-1 rounded-full border whitespace-nowrap"
+            style="color:${accent};border-color:${accent}55;background:${accent}12">${items.length} title${items.length === 1 ? '' : 's'}</span>
+    </div>
+    <div data-grid class="grid grid-cols-1 min-[400px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 sm:gap-4">
+      ${items.map(cardHTML).join('')}
+    </div>
+  </section>`;
+}
+
+function renderSections() {
+  const host = $('#sections');
+  const visible = State.allDeals().filter(dealPasses);
+  const visibleTitles = new Set(visible.map(v => normTitle(v.title)));
+  const searchHTML = renderSearchSectionHTML(visibleTitles);
+  const encCount = searchHTML ? State.searchResults.filter(d => !visibleTitles.has(normTitle(d.title))).length : 0;
+
+  $('#dealCounter').textContent =
+    `${visible.length} deal${visible.length === 1 ? '' : 's'} shown${encCount ? ` · ${encCount} encyclopedia` : ''}`;
+
+  if (!visible.length && !searchHTML) {
+    host.innerHTML = '';
+    $('#emptyState').classList.remove('hidden');
+    return;
+  }
+  $('#emptyState').classList.add('hidden');
+
+  const catHTML = CATEGORIES.map(cat => {
+    const items = visible.filter(d => d.category === cat.id);
+    if (items.length) return sectionHTML(cat, items);
+    // Keep the premier giveaways row visible with a note when none are live.
+    if (cat.id === 'free' && !State.filters.search && State.filters.systems.has('pc')) {
+      return `
+      <section data-cat="free">
+        <div class="mb-3">
+          <h2 class="text-xl sm:text-2xl font-extrabold flex items-center gap-2.5" style="text-shadow:0 0 22px ${cat.accent}55">
+            <span>${cat.emoji}</span><span>${escapeHtml(cat.title)}</span>
+          </h2>
+          <p class="text-xs text-slate-500 mt-0.5 ml-9">${escapeHtml(cat.blurb)}</p>
+        </div>
+        <div class="p-5 rounded-2xl border border-nexus-border bg-nexus-card/40 text-sm text-slate-400">
+          🕓 No limited-time giveaways are live at this moment — they rotate weekly. Grab a
+          <span class="text-blue-400 font-semibold">Free-to-Play staple</span> below in the meantime! 🎮
+        </div>
+      </section>`;
+    }
+    return '';
+  }).join('');
+
+  host.innerHTML = searchHTML + catHTML;
+  ImageHarvester.observeAll();   // lazily harvest covers for artless cards
+}
+
+async function runEncyclopediaSearch(query) {
+  try {
+    const results = await NexusDataEngine.searchGames(query);
+    if (State.filters.search !== query.toLowerCase().trim()) return; // query moved on
+    State.searchResults = results;
+    detectPriceDrops();
+    renderSections();
+  } catch (e) {
+    console.warn('[encyclopedia] search failed:', e.message);
+  }
+}
+
+// Seamlessly append freshly-paginated deals into their existing grids.
+function appendNewDeals(fresh) {
+  const passing = fresh.filter(dealPasses);
+  const byCat = {};
+  passing.forEach(d => (byCat[d.category] = byCat[d.category] || []).push(d));
+
+  let needFull = false;
+  Object.entries(byCat).forEach(([cat, items]) => {
+    const grid = document.querySelector(`section[data-cat="${cat}"] [data-grid]`);
+    if (!grid) { needFull = true; return; }
+    grid.insertAdjacentHTML('beforeend', items.map(cardHTML).join(''));
+    const badge = document.querySelector(`[data-count-badge="${cat}"]`);
+    if (badge) {
+      const n = State.allDeals().filter(d => d.category === cat && dealPasses(d)).length;
+      badge.textContent = `${n} title${n === 1 ? '' : 's'}`;
+    }
+  });
+
+  if (needFull) renderSections();
+  const total = State.allDeals().filter(dealPasses).length;
+  $('#dealCounter').textContent = `${total} deal${total === 1 ? '' : 's'} shown`;
+  ImageHarvester.observeAll();
+}
+
+/* ---- System filter badges ---- */
+function renderSystemFilters() {
+  $('#systemFilters').innerHTML = SYSTEMS.map(s => {
+    const active = State.filters.systems.has(s.id);
+    return `
+    <button class="sys-badge shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold"
+      data-system="${s.id}" data-active="${active}" style="color:${s.color};border-color:${s.color}">
+      <span>${s.emoji}</span><span>${s.label}</span>
+    </button>`;
+  }).join('');
+}
+
+/* ---- Header badge counts ---- */
+function renderCounts() {
+  const setBadge = (name, count) => {
+    const el = $(`[data-count="${name}"]`);
+    if (!el) return;
+    el.textContent = count;
+    el.style.transform = count > 0 ? 'scale(1)' : 'scale(0)';
+  };
+  setBadge('favorites', Object.keys(State.favorites).length);
+  setBadge('library', State.library.length);
+}
+
+/* ---- Favorites panel ---- */
+function renderFavorites() {
+  const list = $('#favoritesList');
+  const chips = $('#favFilterChips');
+  const favArr = Object.values(State.favorites);
+  const platforms = ['all', ...new Set(favArr.map(f => f.system))];
+
+  chips.innerHTML = platforms.map(p => {
+    const meta = p === 'all' ? { label: 'All', color: '#94a3b8', emoji: '🌐' } : systemMeta(p);
+    const active = State.filters.favPlatform === p;
+    return `<button data-favfilter="${p}"
+      class="shrink-0 px-2.5 py-1 rounded-full text-xs border transition ${active ? 'font-bold' : 'opacity-60'}"
+      style="color:${meta.color};border-color:${meta.color}${active ? '' : '55'}">
+      ${meta.emoji || ''} ${escapeHtml(meta.label)}</button>`;
+  }).join('');
+
+  const filtered = favArr.filter(f => State.filters.favPlatform === 'all' || f.system === State.filters.favPlatform);
+
+  if (!filtered.length) {
+    list.innerHTML = `<div class="text-center py-16 text-slate-500">
+      <div class="text-4xl mb-2">⭐</div><p class="text-sm">No favorites yet.</p>
+      <p class="text-xs mt-1">Tap the ☆ on any deal to pin it here.</p></div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(f => {
+    const sys = systemMeta(f.system);
+    return `
+    <div class="flex gap-3 p-2.5 rounded-xl bg-nexus-card border border-nexus-border">
+      <img src="${escapeHtml(f.img)}" alt="" class="w-12 h-16 object-cover rounded-md shrink-0"
+           onerror="this.onerror=null;this.src='${placeholderCover(f.title)}'">
+      <div class="flex-1 min-w-0">
+        <a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" class="font-semibold text-sm hover:text-nexus-cyan transition block truncate">${escapeHtml(f.title)}</a>
+        <div class="text-xs mt-0.5" style="color:${sys.color}">${sys.emoji} ${escapeHtml(sys.label)}</div>
+        <div class="text-xs mt-1">
+          ${f.sale === 0 ? '<span class="text-nexus-green font-bold">FREE</span>'
+            : `<span class="text-slate-500 line-through">${money(f.retail)}</span>
+               <span class="text-nexus-green font-bold ml-1">${money(f.sale)}</span>`}
+        </div>
+      </div>
+      <button data-fav="${f.id}" title="Remove" class="self-start text-slate-500 hover:text-nexus-red transition text-lg leading-none">×</button>
+    </div>`;
+  }).join('');
+}
+
+/* ---- Library panel ---- */
+function renderLibrary() {
+  const list = $('#libraryList');
+  if (!State.library.length) {
+    list.innerHTML = `<div class="text-center py-16 text-slate-500">
+      <div class="text-4xl mb-2">📚</div><p class="text-sm">Your library is empty.</p>
+      <p class="text-xs mt-1">Mark deals as owned, or add games above.</p></div>`;
+    return;
+  }
+
+  list.innerHTML = State.library.map(g => {
+    const sys = systemMeta(g.platform === 'Switch2' ? 'switch2'
+      : g.platform === 'Switch' ? 'switch'
+      : g.platform === 'PlayStation' ? 'ps'
+      : g.platform === 'Xbox' ? 'xbox' : 'pc');
+    const dlcRows = (g.dlc || []).map((d, i) => `
+      <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+        <input type="checkbox" data-dlc="${g.id}" data-dlc-idx="${i}" ${d.owned ? 'checked' : ''} class="accent-nexus-cyan w-3.5 h-3.5">
+        <span class="${d.owned ? 'text-slate-300' : 'line-through opacity-60'}">${escapeHtml(d.name)}</span>
+      </label>`).join('');
+
+    return `
+    <div class="p-3 rounded-xl bg-nexus-card border border-nexus-border">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <h4 class="font-semibold text-sm truncate">${escapeHtml(g.title)}</h4>
+          <span class="text-xs" style="color:${sys.color}">${sys.emoji} ${escapeHtml(sys.label)}</span>
+        </div>
+        <button data-lib-remove="${g.id}" class="text-slate-500 hover:text-nexus-red transition text-lg leading-none shrink-0">×</button>
+      </div>
+      ${dlcRows ? `<div class="mt-2 pl-1 space-y-1 border-l-2 border-nexus-border/70 ml-1">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Add-ons / DLC</div>${dlcRows}</div>` : ''}
+      <div class="mt-2 flex gap-1.5">
+        <input data-dlc-add="${g.id}" type="text" placeholder="Add DLC…"
+          class="flex-1 bg-nexus-bg border border-nexus-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-nexus-cyan">
+        <button data-dlc-add-btn="${g.id}" class="px-2.5 py-1 rounded-lg bg-nexus-bg border border-nexus-border text-xs hover:border-nexus-cyan transition">+</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ---- Admin (manual deals) list ---- */
+function renderAdminList() {
+  const list = $('#adminList');
+  if (!State.manual.length) {
+    list.innerHTML = `<p class="text-xs text-slate-600 italic">No manual deals yet.</p>`;
+    return;
+  }
+  list.innerHTML = State.manual.map(m => `
+    <div class="flex items-center justify-between gap-2 p-2 rounded-lg bg-nexus-card border border-nexus-border">
+      <div class="min-w-0">
+        <div class="text-sm font-medium truncate">${escapeHtml(m.title)}</div>
+        <div class="text-xs text-slate-500">${escapeHtml(categoryMeta(m.category).title)} · ${money(m.sale)}</div>
+      </div>
+      <button data-manual-remove="${m.id}" class="text-slate-500 hover:text-nexus-red transition text-lg leading-none shrink-0">×</button>
+    </div>`).join('');
+}
+
+function renderAll() {
+  renderSections();
+  renderCounts();
+}
+
+/* --------------------------------------------------------------------------
+ * 8. ACTIONS
+ * ------------------------------------------------------------------------ */
+
+function findDeal(id) {
+  return State.allDeals().find(d => d.id === id) || State.searchResults.find(d => d.id === id);
+}
+
+function toggleFavorite(id) {
+  if (State.favorites[id]) {
+    delete State.favorites[id];
+    toast('Removed from favorites', 'info');
+  } else {
+    const deal = findDeal(id);
+    if (!deal) return;
+    State.favorites[id] = {
+      id: deal.id, title: deal.title,
+      img: (deal.imgs && deal.imgs[0]) ? deal.imgs[0] : placeholderCover(deal.title, categoryMeta(deal.category).accent),
+      url: deal.url, system: deal.system, retail: deal.retail, sale: deal.sale,
+      fullPrice: !!deal.fullPrice, gameID: deal.gameID,
+    };
+    toast(deal.fullPrice ? 'Bookmarked — we\'ll watch for a price drop 👀' : 'Added to favorites ⭐', 'ok');
+  }
+  State.persist();
+  renderAll();
+  renderFavorites();
+  refreshDetailIfOpen(id);
+}
+
+function toggleOwned(id) {
+  const deal = findDeal(id);
+  if (!deal) return;
+  const t = deal.title.trim().toLowerCase();
+  const idx = State.library.findIndex(g => (g.title || '').trim().toLowerCase() === t);
+  if (idx >= 0) {
+    State.library.splice(idx, 1);
+    toast('Removed from library', 'info');
+  } else {
+    State.library.push({ id: uid(), title: deal.title, platform: systemToPlatform(deal.system), dlc: [], owned: true });
+    toast('Added to library 📚', 'ok');
+  }
+  State.persist();
+  renderAll();
+  renderLibrary();
+  refreshDetailIfOpen(id);
+}
+
+function systemToPlatform(system) {
+  return ({ ps: 'PlayStation', xbox: 'Xbox', switch: 'Switch', switch2: 'Switch2', pc: 'PC' })[system] || 'PC';
+}
+
+/* --------------------------------------------------------------------------
+ * 9. INFINITE SCROLL / LOAD MORE
+ * ------------------------------------------------------------------------ */
+
+function updateLoadMoreUI(state) {
+  const wrap = $('#loadMoreWrap');
+  const btn = $('#loadMoreBtn');
+  const note = $('#loadMoreNote');
+  if (!wrap || !btn) return;
+
+  if (State.engine.usedFallback) {
+    btn.style.display = 'none';
+    note.textContent = 'Offline mode — showing the full curated catalogue.';
+    return;
+  }
+  btn.style.display = '';
+  if (state === 'loading') { btn.disabled = true; btn.textContent = '⏳ Loading more…'; note.textContent = ''; }
+  else if (!State.engine.hasMore) { btn.disabled = true; btn.textContent = '🎉 All caught up'; note.textContent = `Synced ${State.engine.liveCount} live PC deals.`; }
+  else { btn.disabled = false; btn.textContent = '⬇ Load More Deals'; note.textContent = `${State.engine.liveCount} live PC deals loaded — scroll for more.`; }
+}
+
+async function loadMore() {
+  if (!State.booted || State.loadingMore || !State.engine.hasMore || State.engine.usedFallback) return;
+  State.loadingMore = true;
+  updateLoadMoreUI('loading');
+  try {
+    const fresh = await State.engine.loadMore();
+    if (fresh.length) {
+      State.deals.push(...fresh);
+      appendNewDeals(fresh);
+    }
+  } catch (err) {
+    console.warn('[loadMore] failed:', err.message);
+    toast('Could not load more deals', 'warn');
+  } finally {
+    State.loadingMore = false;
+    updateLoadMoreUI('idle');
+  }
+}
+
+function setupInfiniteScroll() {
+  const sentinel = $('#scrollSentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) loadMore(); });
+  }, { rootMargin: '700px 0px' });
+  io.observe(sentinel);
+}
+
+/* --------------------------------------------------------------------------
+ * 9.5 GAME DETAIL MODAL  (interactive product view + edition matching + RAWG)
+ * ------------------------------------------------------------------------ */
+
+const tagBadgeHTML = (t) =>
+  `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide bg-nexus-bg/70 border border-nexus-border text-slate-300">${escapeHtml(t)}</span>`;
+
+// Best landscape splash for a deal (derived from Steam header, else null).
+function splashOf(deal) {
+  const steam = (deal.imgs || []).find(u => /steam\/apps\/\d+/.test(u));
+  if (steam) return steam.replace(/library_600x900(_2x)?\.jpg/, 'header.jpg');
+  const remote = (deal.imgs || []).find(u => u && !u.startsWith('data:'));
+  return remote || null;
+}
+function coverOf(deal) {
+  return (deal.imgs || []).find(u => u && !u.startsWith('data:')) || null;
+}
+
+// All tracked listings that share this game's edition-agnostic base title.
+function relatedEditions(deal) {
+  const base = baseTitle(deal.title);
+  return State.allDeals().filter(d => baseTitle(d.title) === base);
+}
+
+function fallbackDescription(deal, related) {
+  const plats = [...new Set(related.flatMap(d => d.tags))].join(', ');
+  const stores = [...new Set(related.map(d => d.store))].join(', ');
+  const priceLine = deal.sale === 0
+    ? 'It is currently 100% free to keep — claim it from the storefront before the giveaway ends.'
+    : `This ${editionLabel(deal.title)} is currently discounted ${deal.discount}% — down from ${money(deal.retail)} to ${money(deal.sale)}.`;
+  return `${deal.title} is available across ${related.length} tracked ${related.length === 1 ? 'listing' : 'listings'} (${stores}). ${priceLine} Supported platforms: ${plats}. Add it to your Library to track ownership, or pin it to Favorites to watch for deeper price drops across every ecosystem.`;
+}
+
+// Human storefront brand name for a listing (explicit, no mystery redirect).
+function storeBrand(deal) {
+  const s = (deal.store || '').toLowerCase();
+  if (s.includes('steam')) return 'Steam';
+  if (s.includes('epic')) return 'Epic Games';
+  if (s.includes('gog')) return 'GOG';
+  if (s.includes('prime')) return 'Prime Gaming';
+  if (s.includes('luna')) return 'Amazon Luna';
+  if (deal.category === 'playstation') return 'PlayStation Store';
+  if (deal.category === 'xbox') return 'Xbox Store';
+  if (deal.category === 'nintendo') return 'Nintendo eShop';
+  return deal.store || 'Store';
+}
+const STORE_ICON = (brand) => ({
+  'Steam': '🟦', 'Epic Games': '⚫', 'GOG': '🟣', 'Prime Gaming': '🔵', 'Amazon Luna': '🌙',
+  'PlayStation Store': '💙', 'Xbox Store': '💚', 'Nintendo eShop': '🛑',
+}[brand] || '🏬');
+function buyLabel(deal) {
+  const brand = storeBrand(deal);
+  return deal.sale === 0 ? `Get Free on ${brand}` : `${deal.source === 'cheapshark' ? 'View Deal' : 'Buy Directly'} on ${brand}`;
+}
+
+function editionRowHTML(d, activeId, cheapestId) {
+  const isActive = d.id === activeId;
+  const isCheapest = d.id === cheapestId;
+  const brand = storeBrand(d);
+  const price = d.sale === 0
+    ? '<span class="text-nexus-green font-extrabold">FREE</span>'
+    : `<span class="text-slate-500 line-through text-xs decoration-nexus-red/80 decoration-2">${money(d.retail)}</span>
+       <span class="text-nexus-green font-extrabold ml-1.5">${money(d.sale)}</span>`;
+  const disc = (d.discount > 0 || d.sale === 0)
+    ? `<span class="ml-2 px-1.5 py-0.5 rounded text-[10px] font-black text-nexus-bg bg-nexus-green">${d.sale === 0 ? '100%' : '-' + d.discount + '%'}</span>`
+    : '';
+  const best = isCheapest ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-black text-nexus-bg bg-amber-400">💰 BEST PRICE</span>` : '';
+  return `
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-2 p-3 rounded-xl bg-nexus-card border ${isActive ? 'border-nexus-cyan shadow-glow' : isCheapest ? 'border-amber-400/70' : 'border-nexus-border'}">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="text-base">${STORE_ICON(brand)}</span>
+        <div class="min-w-0">
+          <div class="text-sm font-semibold text-slate-200 truncate">${escapeHtml(brand)}</div>
+          <div class="flex flex-wrap gap-1 mt-0.5">${d.tags.map(tagBadgeHTML).join('')}</div>
+        </div>
+      </div>
+      <div class="ml-auto flex items-center gap-3">
+        ${best}
+        <div class="text-right leading-none whitespace-nowrap">${price}${disc}</div>
+        <a href="${escapeHtml(d.url)}" target="_blank" rel="noopener noreferrer"
+           class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg hover:opacity-90 transition">
+          ${escapeHtml(buyLabel(d))} ↗
+        </a>
+      </div>
+    </div>`;
+}
+
+function renderDetail(deal) {
+  const cat = categoryMeta(deal.category);
+  const related = relatedEditions(deal);
+  const splash = splashOf(deal);
+  const cover = coverOf(deal);
+  const fav = State.isFavorite(deal.id);
+  const owned = State.isOwned(deal.title);
+
+  // Cheapest paid listing across all merchants (for the "Best Price" badge).
+  const paid = related.filter(d => d.sale > 0);
+  const cheapestId = paid.length ? paid.reduce((a, b) => (b.sale < a.sale ? b : a)).id : null;
+
+  // Group related listings by edition, with the current deal's group first.
+  const groups = {};
+  related.forEach(d => { const l = editionLabel(d.title); (groups[l] = groups[l] || []).push(d); });
+  const groupKeys = Object.keys(groups).sort((a, b) =>
+    (a === editionLabel(deal.title) ? -1 : b === editionLabel(deal.title) ? 1 : 0));
+
+  const editionsHTML = groupKeys.map(label => `
+    <div class="mb-4">
+      <h4 class="text-sm font-bold text-slate-300 mb-2 flex items-center gap-2">
+        <span class="w-1.5 h-1.5 rounded-full" style="background:${cat.accent}"></span>${escapeHtml(label)}
+        <span class="text-xs font-normal text-slate-500">· ${groups[label].length} listing${groups[label].length === 1 ? '' : 's'}</span>
+      </h4>
+      <div class="space-y-2">${groups[label].map(d => editionRowHTML(d, deal.id, cheapestId)).join('')}</div>
+    </div>`).join('');
+
+  const coverBox = cover
+    ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(deal.title)} key art" class="w-full h-full object-cover"
+         onerror="this.onerror=null;this.src='${placeholderCover(deal.title, cat.accent)}'">`
+    : `<div class="w-full h-full grid place-items-center" style="background:radial-gradient(120% 85% at 50% 0%, ${cat.accent}44 0%, transparent 55%), linear-gradient(160deg,#1b1b2e,#0c0c14)">
+         <span class="text-6xl font-black opacity-20" style="color:${cat.accent}">${escapeHtml(initialsOf(deal.title))}</span></div>`;
+
+  const splashStyle = splash
+    ? `background-image:url('${escapeHtml(splash)}');background-size:cover;background-position:center`
+    : `background:radial-gradient(120% 120% at 50% 0%, ${cat.accent}55 0%, transparent 60%), linear-gradient(160deg,#1b1b2e,#0c0c14)`;
+
+  const initialShots = [splash, cover].filter((v, i, a) => v && a.indexOf(v) === i);
+  const shotsHTML = initialShots.length
+    ? initialShots.map(s => `<img src="${escapeHtml(s)}" alt="" class="h-28 sm:h-36 rounded-lg object-cover border border-nexus-border shrink-0" onerror="this.remove()">`).join('')
+    : `<div class="text-xs text-slate-500 py-6">No screenshots available for this title.</div>`;
+
+  const keyHint = RAWG_API_KEY ? '' :
+    `<p class="text-[11px] text-slate-600 mt-2 italic">Live screenshots & trailers activate when a free RAWG API key is set in <code>app.js</code>.</p>`;
+
+  return `
+  <!-- Sticky back bar -->
+  <div class="sticky top-0 z-20 flex items-center gap-3 px-4 py-3 bg-nexus-surface/85 backdrop-blur border-b border-nexus-border">
+    <button data-detail-close class="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-nexus-card border border-nexus-border hover:border-nexus-cyan hover:text-white font-semibold text-sm transition">
+      ← Back to Deals Store
+    </button>
+    <div class="ml-auto flex items-center gap-2">
+      <button data-fav="${deal.id}" class="w-9 h-9 grid place-items-center rounded-xl border transition ${fav ? 'bg-nexus-violet text-white border-nexus-violet shadow-glow-soft' : 'bg-nexus-card border-nexus-border text-slate-300 hover:text-white'}">${fav ? '★' : '☆'}</button>
+      <button data-own="${deal.id}" class="px-3 py-2 rounded-xl border text-xs font-bold transition ${owned ? 'bg-nexus-cyan/15 border-nexus-cyan text-nexus-cyan' : 'bg-nexus-card border-nexus-border text-slate-300 hover:text-white'}">${owned ? '✓ In Library' : '+ Owned'}</button>
+    </div>
+  </div>
+
+  <!-- Splash backdrop -->
+  <div id="detailSplash" class="relative h-44 sm:h-60 md:h-72 w-full" style="${splashStyle}">
+    <div class="absolute inset-0 bg-gradient-to-t from-nexus-surface via-nexus-surface/50 to-transparent"></div>
+  </div>
+
+  <!-- Body -->
+  <div class="px-4 sm:px-6 md:px-8 pb-12 -mt-16 sm:-mt-20 relative z-10 grid md:grid-cols-[260px_1fr] gap-6">
+    <!-- Left: key art -->
+    <div>
+      <div id="detailCover" class="aspect-[2/3] rounded-2xl overflow-hidden border border-nexus-border shadow-2xl bg-nexus-bg">
+        ${coverBox}
+      </div>
+    </div>
+
+    <!-- Right: info -->
+    <div class="min-w-0 pt-4 md:pt-16">
+      <h2 class="text-2xl sm:text-3xl font-extrabold leading-tight">${escapeHtml(deal.title)}</h2>
+      <div id="detailStudios" class="flex flex-wrap items-center gap-2 mt-2 text-xs text-slate-400">
+        <span class="px-2 py-0.5 rounded-full border border-nexus-border">${escapeHtml(cat.emoji + ' ' + cat.title)}</span>
+        ${deal.tags.map(tagBadgeHTML).join('')}
+        <span class="px-2 py-0.5 rounded-full border border-nexus-border">🏬 ${escapeHtml(deal.store)}</span>
+      </div>
+
+      <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
+        ${deal.fullPrice
+          ? `<span class="text-slate-300">Current: <b class="text-slate-100">${money(deal.sale)}</b> <span class="text-amber-400/90 text-xs">· not on active sale</span></span>`
+          : deal.sale === 0
+          ? `<span class="text-nexus-green font-bold">FREE — 100% off ${money(deal.retail)}</span>`
+          : `<span class="text-slate-500 line-through">${money(deal.retail)}</span> <span class="text-nexus-green font-extrabold">${money(deal.sale)}</span> <span class="text-nexus-green text-xs">(-${deal.discount}%)</span>`}
+      </div>
+      <div id="detailHistLow" class="mt-2 text-sm"></div>
+
+      <div class="mt-4">
+        <h3 class="text-sm font-bold text-slate-300 mb-1">About this game</h3>
+        <p id="detailDesc" class="text-sm text-slate-400 leading-relaxed">${escapeHtml(fallbackDescription(deal, related))}</p>
+        ${keyHint}
+      </div>
+
+      <div class="mt-5">
+        <h3 class="text-sm font-bold text-slate-300 mb-2">Screenshots</h3>
+        <div id="detailShots" class="flex gap-3 overflow-x-auto no-scrollbar pb-2">${shotsHTML}</div>
+      </div>
+
+      <div id="detailTrailer" class="mt-5 hidden"></div>
+
+      <div class="mt-6">
+        <h3 class="text-base font-extrabold text-slate-200 mb-1 flex items-center gap-2">🛒 Price Comparison · All Storefronts</h3>
+        <p class="text-xs text-slate-500 mb-3">Every merchant we track for this title — transparent prices, no mystery links.</p>
+        ${editionsHTML}
+      </div>
+    </div>
+  </div>`;
+}
+
+function openDetail(id) {
+  const deal = findDeal(id);
+  if (!deal) return;
+  State.activeDetail = id;
+  ensureModalHistory();
+  const modal = $('#game-detail-modal');
+  const content = $('#detailContent');
+  content.innerHTML = renderDetail(deal);
+  content.scrollTop = 0;
+  modal.classList.remove('hidden-init');
+  void modal.offsetWidth;
+  modal.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  updateBackToCatalog();
+  enrichDetail(deal);
+  loadHistoricalLow(deal);
+}
+
+function closeDetail() {
+  const modal = $('#game-detail-modal');
+  if (modal.classList.contains('hidden-init')) return;
+  modal.classList.remove('open');
+  const otherPanelOpen = $$('[data-overlay]').some(o => !o.classList.contains('hidden-init'));
+  document.body.style.overflow = otherPanelOpen ? 'hidden' : '';
+  setTimeout(() => { modal.classList.add('hidden-init'); updateBackToCatalog(); }, 300);
+  State.activeDetail = null;
+  // Navigation memory: hand focus back to search so context is retained.
+  const s = $('#searchInput');
+  if (s && s.value) s.focus({ preventScroll: true });
+}
+
+// Refresh the open modal in place (preserving scroll) after a fav/own toggle.
+function refreshDetailIfOpen(id) {
+  if (State.activeDetail !== id) return;
+  const deal = findDeal(id);
+  if (!deal) return;
+  const content = $('#detailContent');
+  const y = content.scrollTop;
+  content.innerHTML = renderDetail(deal);
+  content.scrollTop = y;
+  enrichDetail(deal); // cache hit = instant, no refetch
+  loadHistoricalLow(deal);
+}
+
+/* ---- RAWG metadata enrichment (key-gated, cached, graceful) ---- */
+
+async function fetchRawgMeta(title) {
+  const key = RAWG_API_KEY;
+  const s = await fetch(`https://api.rawg.io/api/games?key=${key}&search=${encodeURIComponent(title)}&page_size=1`);
+  if (!s.ok) throw new Error('RAWG search ' + s.status);
+  const g = (await s.json()).results?.[0];
+  if (!g) return null;
+  const meta = {
+    name: g.name,
+    background: g.background_image || null,
+    screenshots: (g.short_screenshots || []).map(x => x.image).filter(Boolean),
+  };
+  try {
+    const d = await fetch(`https://api.rawg.io/api/games/${g.id}?key=${key}`);
+    if (d.ok) {
+      const dj = await d.json();
+      meta.description = dj.description_raw || '';
+      meta.developers = (dj.developers || []).map(x => x.name);
+      meta.publishers = (dj.publishers || []).map(x => x.name);
+      meta.background = meta.background || dj.background_image;
+    }
+  } catch { /* details optional */ }
+  try {
+    const m = await fetch(`https://api.rawg.io/api/games/${g.id}/movies?key=${key}`);
+    if (m.ok) {
+      const mv = (await m.json()).results?.[0];
+      if (mv) { meta.trailer = mv.data?.max || mv.data?.['480'] || null; meta.trailerPoster = mv.preview || null; }
+    }
+  } catch { /* movies optional */ }
+  return meta;
+}
+
+async function enrichDetail(deal) {
+  const base = baseTitle(deal.title);
+  const cached = State.meta[base];
+  if (cached) { applyMeta(deal, cached); return; }
+  if (!RAWG_API_KEY) return; // no key → keep curated fallback silently
+  try {
+    const meta = await fetchRawgMeta(deal.title);
+    if (meta) {
+      State.meta[base] = meta;
+      saveJSON(STORAGE.meta, State.meta);
+      applyMeta(deal, meta);
+    }
+  } catch (e) {
+    console.warn('[RAWG] enrichment failed:', e.message);
+  }
+}
+
+// Apply fetched/cached metadata: upgrade art everywhere + fill modal sections.
+function applyMeta(deal, meta) {
+  // Upgrade stored art + the grid card (works even if it was a text fallback).
+  if (meta.background && Array.isArray(deal.imgs) && !deal.imgs.includes(meta.background)) {
+    deal.imgs.unshift(meta.background);
+    const card = document.querySelector(`.deal-card[data-id="${deal.id}"]`);
+    if (card) card.outerHTML = cardHTML(deal);
+  }
+
+  if (State.activeDetail !== deal.id) return; // modal moved on; art upgrade still applied
+
+  if (meta.description) {
+    const el = $('#detailDesc');
+    if (el) el.textContent = meta.description.length > 900 ? meta.description.slice(0, 900) + '…' : meta.description;
+  }
+  const studios = [...(meta.developers || []), ...(meta.publishers || [])];
+  if (studios.length) {
+    const el = $('#detailStudios');
+    if (el) el.insertAdjacentHTML('beforeend',
+      [...new Set(studios)].slice(0, 4).map(s => `<span class="px-2 py-0.5 rounded-full border border-nexus-border">🎮 ${escapeHtml(s)}</span>`).join(''));
+  }
+  if (meta.screenshots && meta.screenshots.length) {
+    const el = $('#detailShots');
+    if (el) el.innerHTML = meta.screenshots.map(s =>
+      `<img src="${escapeHtml(s)}" alt="" class="h-28 sm:h-36 rounded-lg object-cover border border-nexus-border shrink-0" onerror="this.remove()">`).join('');
+  }
+  if (meta.trailer) {
+    const el = $('#detailTrailer');
+    if (el) {
+      el.classList.remove('hidden');
+      el.innerHTML = `
+        <h3 class="text-sm font-bold text-slate-300 mb-2">🎬 Trailer</h3>
+        <video controls playsinline preload="none" ${meta.trailerPoster ? `poster="${escapeHtml(meta.trailerPoster)}"` : ''}
+          class="w-full max-w-2xl rounded-xl border border-nexus-border bg-black">
+          <source src="${escapeHtml(meta.trailer)}" type="video/mp4">
+        </video>`;
+    }
+  }
+}
+
+/* ---- Historical lowest-price lookup (CheapShark game lookup) ---- */
+// Resolve a CheapShark gameID for a deal (from the deal, or by title search).
+async function resolveGameID(deal) {
+  if (deal.gameID) return deal.gameID;
+  const results = await NexusDataEngine.searchGames(deal.title).catch(() => []);
+  const match = results.find(r => normTitle(r.title) === normTitle(deal.title)) || results[0];
+  return match ? match.gameID : null;
+}
+
+// NOTE: correct endpoint is /api/1.0/games?id=<gameID> (not `cheapshark.com{gameID}`).
+// Returns { cheapestPriceEver:{price,date}, deals:[{storeID,price,...}] }.
+async function fetchHistoricalLow(deal) {
+  const cacheKey = deal.gameID || normTitle(deal.title);
+  if (State.histCache[cacheKey]) return State.histCache[cacheKey];
+  const gameID = await resolveGameID(deal);
+  if (!gameID) return null;
+  const res = await fetch(`https://www.cheapshark.com/api/1.0/games?id=${encodeURIComponent(gameID)}`);
+  if (!res.ok) throw new Error('game lookup ' + res.status);
+  const j = await res.json();
+  const low = j.cheapestPriceEver;
+  if (!low || low.price == null) return null;
+  // cheapestPriceEver has no storeID, so we surface the store of the current
+  // cheapest live deal as the reference storefront.
+  let store = '';
+  if (Array.isArray(j.deals) && j.deals.length) {
+    const cheapest = j.deals.reduce((a, b) => (Number(b.price) < Number(a.price) ? b : a));
+    store = CHEAPSHARK_STORES[Number(cheapest.storeID)] || '';
+  }
+  const out = { price: Number(low.price), date: low.date ? Number(low.date) * 1000 : null, store };
+  State.histCache[cacheKey] = out;
+  return out;
+}
+
+async function loadHistoricalLow(deal) {
+  const el = $('#detailHistLow');
+  if (!el) return;
+  el.innerHTML = `<span class="text-slate-500">🛒 Checking all-time historical low…</span>`;
+  try {
+    const low = await fetchHistoricalLow(deal);
+    if (State.activeDetail !== deal.id) return;
+    if (!low) { el.innerHTML = ''; return; }
+    const dateStr = low.date ? new Date(low.date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+    const storeStr = low.store ? ` (seen on ${escapeHtml(low.store)})` : '';
+    el.innerHTML = `
+      <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-400/10 border border-amber-400/40 text-amber-300 font-semibold">
+        🛒 All-Time Historical Low: <span class="text-amber-200 font-extrabold">${money(low.price)}</span>${storeStr}${dateStr ? ` · <span class="text-slate-400 font-normal">${dateStr}</span>` : ''}
+      </span>`;
+  } catch (e) {
+    if (State.activeDetail === deal.id) el.innerHTML = '';
+    console.warn('[historical-low] failed:', e.message);
+  }
+}
+
+function resetFilters() {
+  State.filters.systems = new Set(SYSTEMS.map(s => s.id));
+  State.filters.freeOnly = false;
+  State.filters.search = '';
+  Object.keys(State.filters.subFilter).forEach(k => State.filters.subFilter[k] = 'all');
+  Object.values(State.filters.storeFilter).forEach(set => set.clear());
+  State.searchResults = [];                       // flush encyclopedia results
+  const free = $('#toggleFreeOnly');
+  free.dataset.active = 'false'; free.style.opacity = '';
+  $('#searchInput').value = '';
+  $('#searchInputMobile').value = '';
+  const csi = $('#consoleSearchInput'); if (csi) { csi.value = ''; renderConsoleResults(''); }
+  if (anyOverlayOpen()) requestCloseOverlays();    // return to the main catalog
+  renderSystemFilters();
+  renderAll();
+  window.scrollTo({ top: 0, behavior: 'smooth' }); // reset viewport to page 0
+  toast('Engine filters reset · main catalog restored', 'ok');
+}
+
+/* --------------------------------------------------------------------------
+ * 10. PANELS
+ * ------------------------------------------------------------------------ */
+
+function openPanel(name) {
+  const overlay = $(`[data-overlay="${name}"]`);
+  if (!overlay) return;
+  ensureModalHistory();
+  overlay.classList.remove('hidden-init');
+  void overlay.offsetWidth;
+  $('[data-backdrop]', overlay).style.opacity = '1';
+  $('.panel', overlay).classList.add('open');
+  document.body.style.overflow = 'hidden';
+  if (name === 'favorites') renderFavorites();
+  if (name === 'library') { renderLibrary(); renderLibraryExtras(); }
+  if (name === 'admin') renderAdminList();
+  updateBackToCatalog();
+}
+
+function closePanel(overlay) {
+  $('[data-backdrop]', overlay).style.opacity = '0';
+  $('.panel', overlay).classList.remove('open');
+  document.body.style.overflow = '';
+  setTimeout(() => { overlay.classList.add('hidden-init'); updateBackToCatalog(); }, 320);
+}
+
+/* --------------------------------------------------------------------------
+ * 11. EVENT WIRING (delegation)
+ * ------------------------------------------------------------------------ */
+
+function wireEvents() {
+  $$('[data-open]').forEach(btn => btn.addEventListener('click', () => openPanel(btn.dataset.open)));
+
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-close]') || e.target.closest('[data-backdrop]')) { requestCloseOverlays(); return; }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && anyOverlayOpen()) requestCloseOverlays();
+  });
+
+  document.addEventListener('click', (e) => {
+    // Autocomplete: pick a suggestion, or hide the box when clicking outside it.
+    const suggest = e.target.closest('[data-suggest-title]');
+    if (suggest) { pickSuggestion(suggest); return; }
+    if (!e.target.closest('#search-suggestions') && e.target.id !== 'ownedTitleInput') hideSuggestions();
+
+    // Back to Main Catalog control.
+    if (e.target.closest('#backToCatalog')) { backToCatalog(); return; }
+
+    const favBtn = e.target.closest('[data-fav]');
+    if (favBtn) { toggleFavorite(favBtn.dataset.fav); return; }
+    const ownBtn = e.target.closest('[data-own]');
+    if (ownBtn) { toggleOwned(ownBtn.dataset.own); return; }
+    const sysBtn = e.target.closest('[data-system]');
+    if (sysBtn) { toggleSystem(sysBtn.dataset.system); return; }
+    const favFilter = e.target.closest('[data-favfilter]');
+    if (favFilter) { State.filters.favPlatform = favFilter.dataset.favfilter; renderFavorites(); return; }
+    const libRemove = e.target.closest('[data-lib-remove]');
+    if (libRemove) {
+      State.library = State.library.filter(g => g.id !== libRemove.dataset.libRemove);
+      State.persist(); renderLibrary(); renderAll(); return;
+    }
+    const dlcAddBtn = e.target.closest('[data-dlc-add-btn]');
+    if (dlcAddBtn) { addDlc(dlcAddBtn.dataset.dlcAddBtn); return; }
+    const manualRemove = e.target.closest('[data-manual-remove]');
+    if (manualRemove) {
+      State.manual = State.manual.filter(m => m.id !== manualRemove.dataset.manualRemove);
+      State.persist(); renderAdminList(); renderAll(); toast('Manual deal removed', 'info'); return;
+    }
+    const loadMoreBtn = e.target.closest('#loadMoreBtn');
+    if (loadMoreBtn) { loadMore(); return; }
+
+    // Library extensions: co-op sync + steam import.
+    if (e.target.closest('#genSyncBtn')) { handleGenSync(); return; }
+    if (e.target.closest('#copySyncBtn')) { handleCopySync(); return; }
+    if (e.target.closest('#compareCoopBtn')) { handleCompareCoop(); return; }
+    if (e.target.closest('#steamImportBtn') || e.target.closest('#steamSyncRetry')) { handleSteamImport(); return; }
+
+    // Detail modal close (back button or backdrop click).
+    if (e.target.closest('[data-detail-close]') || e.target.closest('[data-detail-backdrop]')) { requestCloseOverlays(); return; }
+
+    // Card click -> open the game detail modal (after fav/own already returned).
+    const card = e.target.closest('.deal-card');
+    if (card && card.dataset.id) { openDetail(card.dataset.id); return; }
+  });
+
+  // Change events: DLC checkboxes + per-section sub-filters.
+  document.addEventListener('change', (e) => {
+    const chk = e.target.closest('[data-dlc]');
+    if (chk) {
+      const game = State.library.find(g => g.id === chk.dataset.dlc);
+      if (game && game.dlc[chk.dataset.dlcIdx]) {
+        game.dlc[chk.dataset.dlcIdx].owned = chk.checked;
+        State.persist(); renderLibrary();
+      }
+      return;
+    }
+    const sf = e.target.closest('[data-subfilter]');
+    if (sf) {
+      State.filters.subFilter[sf.dataset.subfilter] = sf.value;
+      renderSections();
+      return;
+    }
+    const sc = e.target.closest('[data-store-check]');
+    if (sc) {
+      const set = State.filters.storeFilter[sc.dataset.storeCheck];
+      if (sc.checked) set.add(sc.value); else set.delete(sc.value);
+      renderSections();
+      return;
+    }
+    // Console "Search & Checkmark" bulk-add toggle.
+    const ca = e.target.closest('[data-console-add]');
+    if (ca) {
+      if (ca.checked) addOwnedGame(ca.dataset.consoleAdd, systemToPlatform(ca.dataset.consoleSys));
+      else removeOwnedByTitle(ca.dataset.consoleAdd);
+      State.persist();
+      renderLibrary(); renderAll(); renderCoopResults();
+      const label = ca.closest('label')?.querySelector('span');
+      if (label) label.className = `text-sm truncate ${ca.checked ? 'text-nexus-cyan' : 'text-slate-300'}`;
+      return;
+    }
+  });
+
+  // Delegated inputs living in dynamic panels: console search + owned-title autocomplete.
+  document.addEventListener('input', (e) => {
+    if (e.target.id === 'consoleSearchInput') renderConsoleResults(e.target.value);
+    if (e.target.id === 'ownedTitleInput') onOwnedTitleInput(e.target.value);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.matches('[data-dlc-add]')) { e.preventDefault(); addDlc(e.target.dataset.dlcAdd); }
+  });
+
+  $('#toggleFreeOnly').addEventListener('click', (e) => {
+    State.filters.freeOnly = !State.filters.freeOnly;
+    e.currentTarget.dataset.active = String(State.filters.freeOnly);
+    e.currentTarget.style.opacity = State.filters.freeOnly ? '1' : '';
+    renderAll();
+  });
+  $('#clearFilters').addEventListener('click', resetFilters);
+  $('#resetAllBtn')?.addEventListener('click', resetFilters);
+
+  let searchTimer, encTimer;
+  const onSearch = (val) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      const q = val.trim().toLowerCase();
+      State.filters.search = q;
+      if (q.length < 3) State.searchResults = [];   // clear stale encyclopedia hits
+      renderAll();
+      clearTimeout(encTimer);
+      if (q.length >= 3) encTimer = setTimeout(() => runEncyclopediaSearch(val.trim()), 320);
+    }, 180);
+  };
+  $('#searchInput').addEventListener('input', (e) => { $('#searchInputMobile').value = e.target.value; onSearch(e.target.value); });
+  $('#searchInputMobile').addEventListener('input', (e) => { $('#searchInput').value = e.target.value; onSearch(e.target.value); });
+
+  $('#refreshBtn').addEventListener('click', () => boot(true));
+
+  $('#ownedForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const title = (fd.get('title') || '').trim();
+    if (!title) return;
+    const dlcRaw = (fd.get('dlc') || '').trim();
+    const dlc = dlcRaw ? dlcRaw.split(',').map(s => s.trim()).filter(Boolean).map(name => ({ name, owned: true })) : [];
+    // Verified metadata captured from a clicked suggestion (authentic cover + ID).
+    const titleInput = $('#ownedTitleInput');
+    const appid = titleInput?.dataset.appid || '';
+    const gameID = titleInput?.dataset.gameid || '';
+    const imgs = appid ? [`https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/library_600x900.jpg`] : [];
+    State.library.push({ id: uid(), title, platform: fd.get('platform') || 'PC', dlc, owned: true, imgs, appid: appid || undefined, gameID: gameID || undefined });
+    State.persist();
+    e.target.reset();
+    if (titleInput) { titleInput.dataset.appid = ''; titleInput.dataset.gameid = ''; }
+    hideSuggestions();
+    renderLibrary(); renderAll();
+    toast(`"${title}" added to library`, 'ok');
+  });
+
+  $('#adminForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const title = (fd.get('title') || '').trim();
+    if (!title) return;
+    const category = fd.get('category') || 'pc';
+    const catSystems = categoryMeta(category).systems;
+    const tags = (fd.get('tags') || '').split(',').map(s => s.trim()).filter(Boolean);
+    const retail = parseFloat(fd.get('retail')) || 0;
+    const sale = fd.get('sale') === '' ? retail : (parseFloat(fd.get('sale')) || 0);
+    const img = (fd.get('img') || '').trim();
+    const deal = {
+      id: uid(), category, system: catSystems[0], title,
+      tags: tags.length ? tags : [systemMeta(catSystems[0]).tag],
+      store: 'Manual Entry', retail, sale,
+      imgs: img ? [img] : [], url: (fd.get('url') || '').trim() || '#', source: 'manual',
+    };
+    State.manual.unshift(deal);
+    State.persist();
+    e.target.reset();
+    renderAdminList(); renderAll();
+    toast(`Deal "${title}" injected`, 'ok');
+  });
+}
+
+function toggleSystem(id) {
+  const set = State.filters.systems;
+  if (set.has(id)) {
+    if (set.size > 1) set.delete(id);
+    else { toast('At least one system must stay on', 'warn'); return; }
+  } else {
+    set.add(id);
+  }
+  renderSystemFilters();
+  renderAll();
+}
+
+function addDlc(gameId) {
+  const input = $(`[data-dlc-add="${gameId}"]`);
+  if (!input) return;
+  const name = input.value.trim();
+  if (!name) return;
+  const game = State.library.find(g => g.id === gameId);
+  if (!game) return;
+  game.dlc = game.dlc || [];
+  game.dlc.push({ name, owned: true });
+  State.persist();
+  renderLibrary();
+}
+
+/* --------------------------------------------------------------------------
+ * 11.5 LIBRARY EXTENSIONS  (console search · Steam import · co-op sync)
+ * ------------------------------------------------------------------------ */
+
+const normTitle = (t = '') => t.toLowerCase().replace(/\s+/g, ' ').trim();
+
+function ownedTitleSet() { return new Set(State.library.map(g => normTitle(g.title))); }
+
+function addOwnedGame(title, platform = 'PC') {
+  const n = normTitle(title);
+  if (!n || State.library.some(g => normTitle(g.title) === n)) return false;
+  State.library.push({ id: uid(), title: title.trim(), platform, dlc: [], owned: true });
+  return true;
+}
+function removeOwnedByTitle(title) {
+  const n = normTitle(title);
+  const before = State.library.length;
+  State.library = State.library.filter(g => normTitle(g.title) !== n);
+  return State.library.length < before;
+}
+
+/* ---- Console "Search & Checkmark" registry (from the mock catalogue) ---- */
+const CONSOLE_LIBRARY = (() => {
+  const seen = new Set(); const out = [];
+  MOCK_DEALS.filter(d => ['playstation', 'xbox', 'nintendo'].includes(d.category)).forEach(d => {
+    const n = normTitle(d.title);
+    if (seen.has(n)) return; seen.add(n);
+    out.push({ title: d.title, system: d.system });
+  });
+  return out.sort((a, b) => a.title.localeCompare(b.title));
+})();
+
+function renderConsoleResults(query = '') {
+  const host = $('#consoleSearchResults');
+  if (!host) return;
+  const q = normTitle(query);
+  const owned = ownedTitleSet();
+  const list = CONSOLE_LIBRARY.filter(g => !q || normTitle(g.title).includes(q));
+  if (!list.length) {
+    host.innerHTML = `<p class="text-xs text-slate-500 py-3">No console titles match “${escapeHtml(query)}”.</p>`;
+    return;
+  }
+  host.innerHTML = list.map(g => {
+    const on = owned.has(normTitle(g.title));
+    const sys = systemMeta(g.system);
+    return `
+      <label class="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-nexus-card cursor-pointer">
+        <input type="checkbox" data-console-add="${escapeHtml(g.title)}" data-console-sys="${g.system}" ${on ? 'checked' : ''} class="w-4 h-4 shrink-0" style="accent-color:${sys.color}">
+        <span class="text-sm truncate ${on ? 'text-nexus-cyan' : 'text-slate-300'}">${escapeHtml(g.title)}</span>
+        <span class="ml-auto text-[10px] shrink-0" style="color:${sys.color}">${sys.emoji} ${escapeHtml(sys.label)}</span>
+      </label>`;
+  }).join('');
+}
+
+/* ---- Steam public-library importer ---- */
+function parseSteamId(input) {
+  const v = (input || '').trim();
+  let m;
+  if (/^\d{17}$/.test(v)) return { type: 'id', id: v };
+  if ((m = v.match(/steamcommunity\.com\/profiles\/(\d{17})/))) return { type: 'id', id: m[1] };
+  if ((m = v.match(/steamcommunity\.com\/id\/([^\/\s?#]+)/))) return { type: 'vanity', vanity: m[1] };
+  if (/^[A-Za-z0-9_.-]{2,32}$/.test(v)) return { type: 'vanity', vanity: v };
+  return null;
+}
+
+// Steam's Web API sends no CORS headers, so we tunnel through free public proxies.
+// Fail-safe ARRAY: tried sequentially — a 403 / timeout / error on one rolls to the
+// next, so no single proxy is a point of failure. (Corrected endpoint forms:
+// allorigins.win -> api.allorigins.win/get, corsproxy.io -> /?url=, freeboard.io ->
+// thingproxy.freeboard.io/fetch.)
+const CORS_PROXIES = [
+  (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,          // raw body
+  (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, // wraps body in .contents
+  (u) => `https://thingproxy.freeboard.io/fetch/${u}`,                  // raw body
+];
+const PROXY_TIMEOUT_MS = 8000;
+
+// Fetch a public Steam page/XML through the proxy array, returning the raw body
+// text. AllOrigins nests the body as a JSON string under `.contents`; corsproxy.io
+// and thingproxy return it raw. Any 403/timeout rolls to the next proxy.
+async function fetchViaProxyText(targetUrl) {
+  let lastErr;
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+    try {
+      const res = await fetch(CORS_PROXIES[i](targetUrl), { signal: controller.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const raw = await res.text();
+      let body = raw;
+      try { const j = JSON.parse(raw); if (j && typeof j.contents === 'string') body = j.contents; } catch { /* already raw */ }
+      if (!body) throw new Error('empty payload');
+      return body;
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[Steam import] CORS proxy ${i + 1}/${CORS_PROXIES.length} failed (${e.message}) — trying next…`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error('All CORS proxies are unreachable right now (last: ' + (lastErr?.message || 'unknown') + '). Please try again shortly.');
+}
+
+// Keyless public-profile summary XML -> { steamID64, privacyState }.
+function parseSteamProfileXml(xml) {
+  const id = /<steamID64>(\d+)<\/steamID64>/.exec(xml);
+  const priv = /<privacyState>(.*?)<\/privacyState>/.exec(xml);
+  return { steamID64: id ? id[1] : null, privacyState: priv ? priv[1] : null };
+}
+// Extract the embedded `var rgGames = [ … ];` array from a games page's HTML.
+function parseRgGames(html) {
+  const m = html.match(/var\s+rgGames\s*=\s*(\[[\s\S]*?\]);/);
+  if (!m) return null;
+  try { return JSON.parse(m[1]).map(g => ({ appid: g.appid, name: g.name })).filter(g => g.name); }
+  catch { return null; }
+}
+// Fallback: parse the games XML feed (<game><appID><name>…).
+function parseGamesXml(xml) {
+  const games = [];
+  const re = /<game>[\s\S]*?<appID>(\d+)<\/appID>[\s\S]*?<name>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/name>/g;
+  let m;
+  while ((m = re.exec(xml))) games.push({ appid: Number(m[1]), name: m[2].trim() });
+  return games;
+}
+
+// KEYLESS import: resolve the public profile (vanity or ID64) through the proxy
+// array, inspect privacy, then parse the owned-games list — no Web API key.
+async function importSteamLibrary(input) {
+  const parsed = parseSteamId(input);
+  if (!parsed) throw new Error('Unrecognized input — enter a 17-digit SteamID64 or your custom vanity name.');
+  const path = parsed.type === 'id' ? `profiles/${parsed.id}` : `id/${encodeURIComponent(parsed.vanity)}`;
+
+  // 1) Keyless profile summary: resolves a vanity name -> SteamID64 and reveals
+  //    the privacy state, all without a developer token.
+  const summaryXml = await fetchViaProxyText(`https://steamcommunity.com/${path}/?xml=1`);
+  const profile = parseSteamProfileXml(summaryXml);
+  if (!profile.steamID64) {
+    throw new Error(parsed.type === 'vanity'
+      ? `No public Steam profile found for “${parsed.vanity}”. Double-check the vanity name.`
+      : 'That SteamID64 did not resolve to a public profile.');
+  }
+  // 2) Privacy inspector — a non-public profile can never expose its games.
+  if (profile.privacyState && profile.privacyState !== 'public') {
+    const e = new Error('Profile is private'); e.privacy = true; throw e;
+  }
+
+  // 3) Parse the owned-games list. Primary: embedded rgGames on the games page.
+  //    Fallback: the games XML feed.
+  const id64 = profile.steamID64;
+  let games = null;
+  try { games = parseRgGames(await fetchViaProxyText(`https://steamcommunity.com/profiles/${id64}/games/?tab=all`)); }
+  catch { /* fall through to XML */ }
+  if (!games || !games.length) {
+    try { games = parseGamesXml(await fetchViaProxyText(`https://steamcommunity.com/profiles/${id64}/games?tab=all&xml=1`)); }
+    catch { /* handled below */ }
+  }
+
+  if (!games || !games.length) {
+    // Public profile, but the list came back empty. Two causes: (a) game details
+    // hidden, or (b) Steam now login-gates the games list even for public
+    // profiles. Signal privacy first (actionable), the caller adds nuance.
+    const e = new Error('Games list unavailable'); e.gated = true; throw e;
+  }
+
+  let added = 0;
+  games.forEach(g => { if (g.name && addOwnedGame(g.name, 'PC')) added++; });
+  State.persist();
+  renderLibrary(); renderAll(); renderConsoleResults($('#consoleSearchInput')?.value || '');
+  return { total: games.length, added };
+}
+
+/* ---- Co-op sync codes (serverless friend library sharing) ---- */
+function b64urlEncode(str) {
+  return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlDecode(b) {
+  b = b.replace(/-/g, '+').replace(/_/g, '/');
+  while (b.length % 4) b += '=';
+  return decodeURIComponent(escape(atob(b)));
+}
+const SYNC_KEY = 'NEXUS';
+function encodeSync(titles) {
+  const json = JSON.stringify(titles);
+  let x = '';
+  for (let i = 0; i < json.length; i++) x += String.fromCharCode(json.charCodeAt(i) ^ SYNC_KEY.charCodeAt(i % SYNC_KEY.length));
+  return b64urlEncode(x);
+}
+function decodeSync(code) {
+  try {
+    let raw = (code || '').trim();
+    const m = raw.match(/sync=([^&#\s]+)/);
+    if (m) raw = m[1];
+    const x = b64urlDecode(raw);
+    let json = '';
+    for (let i = 0; i < x.length; i++) json += String.fromCharCode(x.charCodeAt(i) ^ SYNC_KEY.charCodeAt(i % SYNC_KEY.length));
+    const arr = JSON.parse(json);
+    return Array.isArray(arr) ? arr.filter(t => typeof t === 'string') : null;
+  } catch { return null; }
+}
+function currentSyncCode() { return encodeSync(State.library.map(g => g.title)); }
+function syncLink(code) { return `${location.origin}${location.pathname}#sync=${code}`; }
+
+function computeCoopIntersection() {
+  // Host library = normalized owned titles (de-duped). We compute a STRICT
+  // intersection: repeatedly filter the host set against each friend library so
+  // only games present in EVERY library survive. (Never overwrite host w/ client.)
+  const hostLibrary = [...new Set(State.library.map(g => normTitle(g.title)))];
+  let commonGames = hostLibrary;
+  State.coop.friends.forEach(friend => {
+    const friendLibrary = friend.titles.map(normTitle);
+    commonGames = commonGames.filter(gameId => friendLibrary.includes(gameId));
+  });
+  const disp = new Map(State.library.map(g => [normTitle(g.title), g.title]));
+  return commonGames.map(n => disp.get(n) || n);
+}
+
+function coopCardHTML(title) {
+  const deal = State.allDeals().find(d => normTitle(d.title) === normTitle(title));
+  const isF2P = deal && deal.f2p;
+  const onSale = deal && !isF2P && (deal.sale === 0 || deal.discount > 0);
+  const cover = deal ? coverOf(deal) : null;
+  const media = cover
+    ? `<img src="${escapeHtml(cover)}" alt="" class="w-full h-full object-cover" onerror="this.remove()">`
+    : `<div class="w-full h-full grid place-items-center text-lg font-black text-slate-600">${escapeHtml(initialsOf(title))}</div>`;
+  const tag = isF2P
+    ? `<span class="text-[10px] font-bold text-blue-400">🎮 Free-to-Play</span>`
+    : onSale
+    ? (deal.sale === 0
+        ? `<span class="text-[10px] font-bold text-nexus-green">🔥 FREE NOW</span>`
+        : `<span class="text-[10px] font-bold text-nexus-green">🔥 -${deal.discount}% · ${money(deal.sale)}</span>`)
+    : `<span class="text-[10px] text-slate-500">Owned by all</span>`;
+  const link = deal && (isF2P || onSale)
+    ? `<a href="${escapeHtml(deal.url)}" target="_blank" rel="noopener noreferrer" class="block mt-1 text-[10px] font-bold text-nexus-cyan hover:underline">${isF2P ? 'Play Free' : 'View Deal'} ↗</a>` : '';
+  const border = isF2P ? 'border-blue-500' : onSale ? 'border-nexus-green shadow-glow' : 'border-nexus-border';
+  return `
+    <div class="rounded-lg bg-nexus-card border ${border} overflow-hidden">
+      <div class="aspect-[3/4] bg-nexus-bg">${media}</div>
+      <div class="p-2">
+        <div class="text-xs font-semibold text-slate-200 truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+        ${tag}${link}
+      </div>
+    </div>`;
+}
+
+function renderCoopResults() {
+  const host = $('#coopResults');
+  if (!host) return;
+  if (!State.coop.friends.length) {
+    host.innerHTML = `<p class="text-xs text-slate-500">Paste friend codes above and compare to reveal games everyone owns.</p>`;
+    return;
+  }
+
+  // Free-to-Play staples are a global reference library — instantly shared by
+  // everyone, no ownership or private keys needed.
+  const f2pTitles = [...new Map(State.allDeals().filter(d => d.f2p).map(d => [normTitle(d.title), d.title])).values()];
+  const f2pHTML = f2pTitles.length ? `
+    <div class="mb-5">
+      <div class="text-xs font-bold text-blue-400 mb-2 flex items-center gap-1.5">⚡ Immediate Shared Games <span class="font-normal text-slate-500">(Free-to-Play for Everyone)</span></div>
+      <div class="grid grid-cols-3 gap-2">${f2pTitles.map(coopCardHTML).join('')}</div>
+    </div>` : '';
+
+  const inter = computeCoopIntersection();
+  const libs = State.coop.friends.length + 1;
+  let ownedHTML;
+  if (!inter.length) {
+    ownedHTML = `<div class="text-center py-6 px-3 rounded-xl border border-nexus-border bg-nexus-bg text-slate-400 text-sm">
+      🙅 No overlapping co-op games detected. Check out current sales to match portfolios!</div>`;
+  } else {
+    const onSaleCount = inter.filter(t => { const d = State.allDeals().find(x => normTitle(x.title) === normTitle(t)); return d && (d.sale === 0 || d.discount > 0); }).length;
+    ownedHTML = `
+      <div class="text-xs text-slate-400 mb-2">🎯 <b class="text-slate-200">${inter.length}</b> game${inter.length === 1 ? '' : 's'} owned by all <b class="text-slate-200">${libs}</b> players${onSaleCount ? ` · <span class="text-nexus-green">${onSaleCount} on sale now</span>` : ''}</div>
+      <div class="grid grid-cols-3 gap-2">${inter.map(coopCardHTML).join('')}</div>`;
+  }
+
+  host.innerHTML = f2pHTML + `<div class="text-xs font-bold text-slate-300 mb-2">🤝 Games You All Own</div>` + ownedHTML;
+}
+
+// Build all Library-panel extension sections (called when the panel opens).
+function renderLibraryExtras() {
+  const host = $('#libExtras');
+  if (!host) return;
+  host.innerHTML = `
+  <details class="lib-section" open>
+    <summary>🎮 Console Search &amp; Checkmark</summary>
+    <div class="pt-2">
+      <p class="text-xs text-slate-500 mb-2">Search PlayStation, Xbox &amp; Nintendo titles and tick everything you own.</p>
+      <input id="consoleSearchInput" type="text" placeholder="Type a game title… (e.g. Mario, Halo, God of War)" autocomplete="off"
+        class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
+      <div id="consoleSearchResults" class="mt-2 max-h-60 overflow-y-auto pr-1"></div>
+    </div>
+  </details>
+
+  <details class="lib-section">
+    <summary>📥 Import Steam Library (Keyless)</summary>
+    <div class="pt-2 space-y-2">
+      <p class="text-xs text-slate-500">Enter your public SteamID64 <b>or</b> custom vanity name — no API key needed. Your profile's <b>Game Details</b> must be set to Public.</p>
+      <input id="steamIdInput" type="text" placeholder="76561198… or your vanity name (e.g. gabelogannewell)" autocomplete="off"
+        class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
+      <button id="steamImportBtn" class="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg font-bold text-sm hover:opacity-90 transition">🔄 Sync Library</button>
+      <div id="steamImportStatus" class="text-xs text-slate-400 leading-relaxed"></div>
+
+      <!-- Automated privacy-protection injector -->
+      <div id="steam-privacy-helper" class="hidden rounded-xl border border-amber-500/50 p-3" style="background:#241d08">
+        <div class="font-bold text-amber-300 text-sm mb-1">🔒 Sync Unsuccessful: Your Steam Game Details are set to Private.</div>
+        <p class="text-xs text-amber-200/80 mb-2">To sync your PC library in one tap, please update your account settings:</p>
+        <ol class="text-xs text-amber-100/90 list-decimal list-inside space-y-1">
+          <li>Open Steam and go to <b>Edit Profile</b>.</li>
+          <li>Click on <b>Privacy Settings</b> in the left sidebar.</li>
+          <li>Toggle <b>'My Profile'</b> and <b>'Game Details'</b> to <b>PUBLIC</b>.</li>
+          <li>Tap the <b>'Sync Library'</b> button below to refresh!</li>
+        </ol>
+        <button id="steamSyncRetry" class="mt-2 w-full py-2 rounded-lg bg-amber-400 text-nexus-bg font-bold text-xs hover:opacity-90 transition">🔄 Sync Library</button>
+      </div>
+    </div>
+  </details>
+
+  <details class="lib-section">
+    <summary>🤝 Co-op Lounge: Play with Friends</summary>
+    <div class="pt-2 space-y-4">
+      <div>
+        <p class="text-xs text-slate-500 mb-2">📤 Share your library — generate a sync code and text the link to friends.</p>
+        <button id="genSyncBtn" class="w-full py-2 rounded-lg bg-nexus-bg border border-nexus-border text-sm font-semibold hover:border-nexus-cyan transition">📤 Generate My Sync Code</button>
+        <div id="syncCodeWrap" class="hidden mt-2 flex gap-1.5">
+          <input id="syncCodeOutput" readonly class="flex-1 bg-nexus-bg border border-nexus-border rounded-lg px-2 py-1.5 text-xs text-slate-300 font-mono" />
+          <button id="copySyncBtn" class="shrink-0 px-3 py-1.5 rounded-lg bg-nexus-cyan text-nexus-bg font-bold text-xs hover:opacity-90 transition">Copy Link</button>
+        </div>
+      </div>
+      <div>
+        <p class="text-xs text-slate-500 mb-2">📥 Paste up to 4 friend sync codes (one per line):</p>
+        <textarea id="coopCodesInput" rows="4" placeholder="paste friend sync codes or links here…"
+          class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-nexus-cyan resize-y"></textarea>
+        <button id="compareCoopBtn" class="mt-2 w-full py-2 rounded-lg bg-gradient-to-r from-nexus-violet to-nexus-cyan text-nexus-bg font-bold text-sm hover:opacity-90 transition">🎮 Find Games We All Own</button>
+      </div>
+      <div id="coopResults"></div>
+    </div>
+  </details>`;
+
+  renderConsoleResults('');
+  renderCoopResults();
+}
+
+/* ---- Library-extension button handlers ---- */
+function handleGenSync() {
+  if (!State.library.length) { toast('Add games to your library first', 'warn'); return; }
+  const code = currentSyncCode();
+  const wrap = $('#syncCodeWrap');
+  const out = $('#syncCodeOutput');
+  if (out) out.value = syncLink(code);
+  if (wrap) wrap.classList.remove('hidden');
+  toast('Sync link generated — copy & share it', 'ok');
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove(); return ok;
+  } catch { return false; }
+}
+
+async function handleCopySync() {
+  const out = $('#syncCodeOutput');
+  if (!out || !out.value) { handleGenSync(); return; }
+  const ok = await copyText(out.value);
+  toast(ok ? 'Sync link copied to clipboard 📋' : 'Copy failed — select the link manually', ok ? 'ok' : 'warn');
+  out.focus(); out.select();
+}
+
+function handleCompareCoop() {
+  const ta = $('#coopCodesInput');
+  const lines = (ta?.value || '').split('\n').map(s => s.trim()).filter(Boolean).slice(0, 4);
+  if (!lines.length) { toast('Paste at least one friend sync code', 'warn'); return; }
+  const friends = [];
+  let bad = 0;
+  lines.forEach((line, i) => {
+    const titles = decodeSync(line);
+    if (titles && titles.length) friends.push({ label: `Friend ${i + 1}`, titles });
+    else bad++;
+  });
+  State.coop.friends = friends;
+  renderCoopResults();
+  if (!friends.length) toast('None of those codes could be read', 'err');
+  else toast(`Comparing ${friends.length + 1} libraries${bad ? ` · ${bad} code(s) invalid` : ''}`, bad ? 'warn' : 'ok');
+}
+
+async function handleSteamImport() {
+  const input = $('#steamIdInput');
+  const status = $('#steamImportStatus');
+  const helper = $('#steam-privacy-helper');
+  const val = (input?.value || '').trim();
+  if (helper) helper.classList.add('hidden');
+  if (!val) { toast('Enter a SteamID or vanity name', 'warn'); return; }
+  if (status) status.innerHTML = '<span class="text-nexus-cyan">⏳ Reading public Steam profile…</span>';
+  try {
+    const { total, added } = await importSteamLibrary(val);
+    if (status) status.innerHTML = `<span class="text-nexus-green">✓ Imported ${added} new game${added === 1 ? '' : 's'} from ${total} public titles.</span>`;
+    toast(`Steam import: +${added} games`, 'ok');
+  } catch (err) {
+    if (err.privacy) {
+      if (status) status.innerHTML = '';
+      if (helper) helper.classList.remove('hidden');
+    } else if (err.gated) {
+      // Profile is public but Steam login-gates the games list — be honest.
+      if (status) status.innerHTML = `<span class="text-amber-400 leading-relaxed">⚠ Profile is public, but Steam now requires a login to serve the full games list (a Valve platform change), so keyless import can't read it. Use <b>Console Search</b> above or the manual add form to build your library.</span>`;
+      if (helper) helper.classList.remove('hidden');
+    } else {
+      if (status) status.innerHTML = `<span class="text-amber-400">⚠ ${escapeHtml(err.message)}</span>`;
+    }
+  }
+}
+
+// If the page was opened from a shared sync link, auto-load that friend.
+function ingestSyncFromUrl() {
+  const m = location.hash.match(/sync=([^&#\s]+)/);
+  if (!m) return;
+  const titles = decodeSync(m[1]);
+  if (titles && titles.length) {
+    State.coop.friends = [{ label: 'Shared link', titles }];
+    toast(`Loaded a friend's library (${titles.length} games) — open My Library ▸ Co-op Lounge`, 'ok');
+  }
+}
+
+/* ---- Custom-library autocomplete (local catalogue + Steam name DB) ---- */
+const LOCAL_CATALOG = (() => {
+  const seen = new Set(); const out = [];
+  MOCK_DEALS.forEach(d => {
+    const n = normTitle(d.title);
+    if (seen.has(n)) return; seen.add(n);
+    out.push({ title: d.title, platform: systemToPlatform(d.system), appid: STEAM_APPID[baseTitle(d.title)] });
+  });
+  return out;
+})();
+
+let ownedSuggestTimer;
+function onOwnedTitleInput(val) {
+  const q = normTitle(val);
+  if (q.length < 2) { hideSuggestions(); return; }
+  const local = LOCAL_CATALOG.filter(g => normTitle(g.title).includes(q)).slice(0, 8)
+    .map(g => ({ title: g.title, platform: g.platform, appid: g.appid, source: 'catalog' }));
+  renderSuggestions(local); // instant, from local catalogue
+  clearTimeout(ownedSuggestTimer);
+  ownedSuggestTimer = setTimeout(async () => {
+    try {
+      const remote = await NexusDataEngine.searchGames(val.trim());
+      const rsug = remote.slice(0, 10).map(d => ({ title: d.title, platform: 'PC', appid: d.steamAppID, gameID: d.gameID, source: 'steam' }));
+      const merged = []; const seen = new Set();
+      [...local, ...rsug].forEach(s => { const n = normTitle(s.title); if (seen.has(n)) return; seen.add(n); merged.push(s); });
+      if (normTitle($('#ownedTitleInput')?.value || '') === q) renderSuggestions(merged);
+    } catch { /* remote optional */ }
+  }, 300);
+}
+
+function renderSuggestions(list) {
+  const box = $('#search-suggestions');
+  if (!box) return;
+  if (!list.length) { hideSuggestions(); return; }
+  box.innerHTML = list.map(s => `
+    <button type="button" data-suggest-title="${escapeHtml(s.title)}" data-suggest-platform="${escapeHtml(s.platform || 'PC')}"
+      data-suggest-appid="${s.appid || ''}" data-suggest-gameid="${s.gameID || ''}"
+      class="w-full text-left px-3 py-2 hover:bg-nexus-bg flex items-center gap-2 border-b border-nexus-border/50 last:border-0">
+      <span class="text-sm text-slate-200 truncate">${escapeHtml(s.title)}</span>
+      <span class="ml-auto text-[10px] shrink-0 ${s.source === 'steam' ? 'text-nexus-cyan' : 'text-slate-500'}">${s.source === 'steam' ? '🟦 Steam DB' : '📚 Catalog'} · ${escapeHtml(s.platform || 'PC')}</span>
+    </button>`).join('');
+  box.classList.remove('hidden');
+}
+function hideSuggestions() {
+  const b = $('#search-suggestions');
+  if (b) { b.classList.add('hidden'); b.innerHTML = ''; }
+}
+function pickSuggestion(el) {
+  const input = $('#ownedTitleInput');
+  if (!input) return;
+  input.value = el.dataset.suggestTitle;
+  input.dataset.appid = el.dataset.suggestAppid || '';
+  input.dataset.gameid = el.dataset.suggestGameid || '';   // verified global ID signature
+  const plat = el.dataset.suggestPlatform || 'PC';
+  const sel = $('#ownedForm select[name="platform"]');
+  if (sel && [...sel.options].some(o => o.value === plat)) sel.value = plat;
+  hideSuggestions();
+  input.focus();
+}
+
+/* ---- Back to Main Catalog navigation control ---- */
+function anyOverlayOpen() {
+  return $$('[data-overlay]').some(o => !o.classList.contains('hidden-init')) ||
+    !$('#game-detail-modal').classList.contains('hidden-init');
+}
+function updateBackToCatalog() {
+  const btn = $('#backToCatalog');
+  if (btn) btn.classList.toggle('hidden-init', !anyOverlayOpen());
+}
+
+// Push a single pseudo history entry when the first overlay opens, so a mobile
+// back-gesture / hardware back pops THAT entry (staying on the page) instead of
+// unloading the app — popstate then closes our modal locally.
+function ensureModalHistory() {
+  if (State.pushed === 0) { history.pushState({ nexusModal: true }, ''); State.pushed = 1; }
+}
+function closeAllOverlaysDom() {
+  closeDetail();
+  $$('[data-overlay]').forEach(o => { if (!o.classList.contains('hidden-init')) closePanel(o); });
+  hideSuggestions();
+  setTimeout(updateBackToCatalog, 320);
+}
+// UI-initiated close routes through history so the pushed entry stays balanced.
+function requestCloseOverlays() {
+  if (State.pushed > 0) history.back();   // -> popstate -> closeAllOverlaysDom()
+  else closeAllOverlaysDom();
+}
+function backToCatalog() { requestCloseOverlays(); }
+
+/* --------------------------------------------------------------------------
+ * 12. BOOT
+ * ------------------------------------------------------------------------ */
+
+function setEngineStatus(state, text) {
+  const el = $('#engineStatus');
+  const dot = el.querySelector('span:first-child');
+  const label = el.querySelector('span:last-child');
+  const map = { loading: 'bg-amber-400 animate-pulse', live: 'bg-nexus-green', fallback: 'bg-amber-400' };
+  dot.className = `w-2 h-2 rounded-full ${map[state] || map.loading}`;
+  label.textContent = text;
+}
+
+async function boot(isRefresh = false) {
+  State.booted = false;
+  setEngineStatus('loading', isRefresh ? 'Refreshing deals…' : 'Booting Nexus Data Engine…');
+  State.engine = new NexusDataEngine();
+  try {
+    State.deals = await State.engine.load();
+  } catch (err) {
+    console.error('Engine load failed catastrophically:', err);
+    State.deals = MOCK_DEALS.map(NexusDataEngine.normalize);
+    State.engine.usedFallback = true;
+  }
+
+  if (State.engine.usedFallback) setEngineStatus('fallback', 'Offline mode · curated fallback deals');
+  else setEngineStatus('live', `Live · ${State.engine.liveCount} PC deals synced`);
+
+  State.booted = true;
+  detectPriceDrops();
+  renderAll();
+  updateLoadMoreUI('idle');
+  if (isRefresh) toast('Deals refreshed', 'ok');
+}
+
+function init() {
+  renderSystemFilters();
+  wireEvents();
+
+  // Back-gesture / hardware-back interception: when our pushed modal entry is
+  // popped, close overlays locally instead of letting the browser unload the app.
+  window.addEventListener('popstate', (event) => {
+    if (State.pushed > 0) {
+      if (event.preventDefault) event.preventDefault(); // (popstate isn't cancelable; the pushed entry is what absorbs the nav)
+      State.pushed = 0;
+      closeAllOverlaysDom();
+    }
+  });
+
+  ingestSyncFromUrl();       // pick up a shared co-op link if present
+  renderAll();               // paint immediately with mock/manual data
+  setupInfiniteScroll();
+
+  // Favorites watchlist monitor loop — re-scan for live price drops periodically.
+  setInterval(() => {
+    const before = [...State.priceDrops].sort().join('|');
+    detectPriceDrops();
+    if ([...State.priceDrops].sort().join('|') !== before) {
+      renderAll();
+      renderFavorites();
+      if (State.priceDrops.size) toast('🔥 A favorite just went on sale!', 'ok');
+    }
+  }, 30000);
+  updateLoadMoreUI('idle');
+  boot();                    // hydrate with live paginated data
+
+  if ('serviceWorker' in navigator) {
+    const swCode = `self.addEventListener('install',e=>self.skipWaiting());
+      self.addEventListener('activate',e=>self.clients.claim());
+      self.addEventListener('fetch',()=>{});`;
+    try {
+      const blob = new Blob([swCode], { type: 'text/javascript' });
+      navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(() => {});
+    } catch { /* non-fatal */ }
+  }
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+else init();

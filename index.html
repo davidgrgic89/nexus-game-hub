@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <meta name="description" content="Nexus Game Hub — aggregated gaming discounts, price drops, and 100% free-to-keep games across PC, Xbox, PlayStation & Nintendo Switch." />
+  <title>Nexus Game Hub — Deals, Free Games & Price Drops</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Ctext%20y='26'%20font-size='26'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20180%20180'%3E%3Crect%20width='180'%20height='180'%20rx='38'%20fill='%230a0a0f'/%3E%3Ctext%20x='90'%20y='122'%20font-size='104'%20text-anchor='middle'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind runtime config — extends the palette for the neon game-store theme.
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            nexus: {
+              bg:      '#0a0a0f',
+              surface: '#12121c',
+              card:    '#161623',
+              border:  '#25253a',
+              cyan:    '#22d3ee',
+              violet:  '#8b5cf6',
+              green:   '#22c55e',
+              red:     '#ef4444',
+            }
+          },
+          fontFamily: {
+            display: ['"Segoe UI"', 'system-ui', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
+          },
+          boxShadow: {
+            glow:       '0 0 18px -2px rgba(34,211,238,0.55)',
+            'glow-soft':'0 0 24px -6px rgba(139,92,246,0.5)',
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    :root { color-scheme: dark; }
+    html, body { background: #0a0a0f; }
+    body { -webkit-tap-highlight-color: transparent; }
+
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #0a0a0f; }
+    ::-webkit-scrollbar-thumb { background: #25253a; border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3a3a55; }
+
+    /* Ambient animated backdrop */
+    .nexus-aurora {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+    }
+    .nexus-aurora::before, .nexus-aurora::after {
+      content: ""; position: absolute; width: 42vw; height: 42vw; border-radius: 50%;
+      filter: blur(80px); opacity: 0.16; will-change: transform;
+    }
+    .nexus-aurora::before { background: #22d3ee; top: -18vw; left: -12vw; animation: drift1 22s ease-in-out infinite; }
+    .nexus-aurora::after  { background: #8b5cf6; bottom: -22vw; right: -14vw; animation: drift2 26s ease-in-out infinite; }
+    @keyframes drift1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(6vw,4vw)} }
+    @keyframes drift2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-5vw,-3vw)} }
+
+    /* Card cover hover-zoom */
+    .cover-frame { overflow: hidden; }
+    .cover-frame img { transition: transform .45s cubic-bezier(.2,.7,.3,1), filter .45s ease; }
+    .deal-card:hover .cover-frame img { transform: scale(1.08); filter: saturate(1.15) brightness(1.05); }
+    .deal-card { transition: transform .2s ease, box-shadow .3s ease, border-color .3s ease; }
+    .deal-card:hover { transform: translateY(-4px); border-color: #3a3a55; box-shadow: 0 12px 40px -12px rgba(0,0,0,.8); }
+
+    /* Filter badge glow when active */
+    .sys-badge { transition: all .22s ease; }
+    .sys-badge[data-active="true"] { box-shadow: 0 0 0 1px currentColor, 0 0 16px -2px currentColor; }
+    .sys-badge[data-active="false"] { opacity: .42; filter: grayscale(.6); }
+
+    /* Slide-out panels */
+    .panel { transition: transform .32s cubic-bezier(.4,0,.2,1); }
+    .panel-right  { transform: translateX(100%); }
+    .panel-right.open { transform: translateX(0); }
+    .backdrop { transition: opacity .3s ease; }
+
+    /* Entrance animation for cards */
+    @keyframes cardIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    .anim-in { animation: cardIn .35s ease both; }
+
+    [x-cloak], .hidden-init { display: none !important; }
+
+    /* Deal cards are clickable (open detail modal) */
+    .deal-card { cursor: pointer; }
+
+    /* Price-drop notice flash on favorited cards */
+    @keyframes priceFlash { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(1.06); } }
+    .price-drop-flash { animation: priceFlash 1.1s ease-in-out infinite; box-shadow: 0 0 14px rgba(239,68,68,.7); }
+
+    /* Collapsible library-extension sections */
+    .lib-section { border: 1px solid #25253a; border-radius: 0.75rem; background: #12121c; padding: 0.5rem 0.75rem; }
+    .lib-section > summary { cursor: pointer; font-weight: 700; font-size: 0.875rem; color: #e2e8f0; list-style: none; display: flex; align-items: center; gap: .4rem; user-select: none; }
+    .lib-section > summary::-webkit-details-marker { display: none; }
+    .lib-section > summary::before { content: "▸"; color: #64748b; transition: transform .2s; }
+    .lib-section[open] > summary::before { transform: rotate(90deg); }
+
+    /* Detail modal enter/exit transitions */
+    #game-detail-modal [data-detail-backdrop] { opacity: 0; transition: opacity .3s ease; }
+    #game-detail-modal.open [data-detail-backdrop] { opacity: 1; }
+    #game-detail-modal [data-detail-panel] { transform: translateY(18px) scale(.985); opacity: 0; transition: transform .3s cubic-bezier(.4,0,.2,1), opacity .3s ease; }
+    #game-detail-modal.open [data-detail-panel] { transform: none; opacity: 1; }
+
+    /* Line clamp helper */
+    .clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  </style>
+</head>
+
+<body class="font-display text-slate-100 antialiased min-h-screen selection:bg-nexus-violet/40">
+  <div class="nexus-aurora"></div>
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="sticky top-0 z-40 backdrop-blur-xl bg-nexus-bg/80 border-b border-nexus-border">
+    <div class="max-w-[1600px] mx-auto px-4 sm:px-6">
+      <!-- Brand + actions row -->
+      <div class="flex items-center gap-3 h-16">
+        <div class="flex items-center gap-2.5 shrink-0">
+          <span class="text-2xl sm:text-3xl drop-shadow-[0_0_10px_rgba(34,211,238,.6)]">🎮</span>
+          <div class="leading-none">
+            <h1 class="text-lg sm:text-xl font-extrabold tracking-tight">
+              <span class="bg-gradient-to-r from-nexus-cyan to-nexus-violet bg-clip-text text-transparent">NEXUS</span>
+              <span class="text-slate-200">GAME HUB</span>
+            </h1>
+            <p class="text-[10px] sm:text-[11px] text-slate-500 tracking-wide">Deals · Free Games · Price Drops</p>
+          </div>
+        </div>
+
+        <!-- Search + Reset All -->
+        <div class="flex-1 max-w-xl ml-auto sm:ml-4 hidden sm:flex items-center gap-2">
+          <div class="relative flex-1">
+            <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.3-4.3m1.8-5.2a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input id="searchInput" type="search" placeholder="Search games…" autocomplete="off"
+              class="w-full bg-nexus-surface border border-nexus-border rounded-xl pl-9 pr-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-nexus-cyan focus:ring-1 focus:ring-nexus-cyan/60 transition" />
+          </div>
+          <button id="resetAllBtn" title="Uncheck all sub-filters, clear search, turn all systems ON, return to main catalog"
+            class="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-nexus-surface border border-nexus-border hover:border-nexus-red hover:text-white text-sm text-slate-300 transition">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M5 9a7 7 0 0111.6-3M19 15a7 7 0 01-11.6 3"/></svg>
+            <span class="hidden md:inline">Reset Engine Filters</span>
+          </button>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button data-open="favorites" class="nav-btn group relative flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-xl bg-nexus-surface border border-nexus-border hover:border-nexus-violet hover:shadow-glow-soft transition text-sm">
+            <span>⭐</span><span class="hidden md:inline text-slate-300">Favorites</span>
+            <span data-count="favorites" class="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 grid place-items-center text-[10px] font-bold rounded-full bg-nexus-violet text-white shadow-glow-soft scale-0 transition-transform"></span>
+          </button>
+          <button data-open="library" class="nav-btn group relative flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-xl bg-nexus-surface border border-nexus-border hover:border-nexus-cyan hover:shadow-glow transition text-sm">
+            <span>📚</span><span class="hidden md:inline text-slate-300">Library</span>
+            <span data-count="library" class="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 grid place-items-center text-[10px] font-bold rounded-full bg-nexus-cyan text-nexus-bg shadow-glow scale-0 transition-transform"></span>
+          </button>
+          <button data-open="admin" title="Manual deal entry" class="nav-btn flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-xl bg-nexus-surface border border-nexus-border hover:border-nexus-green transition text-sm">
+            <span>➕</span><span class="hidden lg:inline text-slate-300">Add Deal</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Mobile search -->
+      <div class="sm:hidden pb-3">
+        <div class="relative">
+          <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.3-4.3m1.8-5.2a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input id="searchInputMobile" type="search" placeholder="Search games…" autocomplete="off"
+            class="w-full bg-nexus-surface border border-nexus-border rounded-xl pl-9 pr-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:border-nexus-cyan transition" />
+        </div>
+      </div>
+
+      <!-- ===== GLOBAL SYSTEM FILTER ROW ===== -->
+      <div class="flex items-center gap-2 overflow-x-auto no-scrollbar pb-3 pt-0.5">
+        <span class="text-[11px] uppercase tracking-widest text-slate-500 mr-1 shrink-0 hidden sm:inline">Systems</span>
+        <div id="systemFilters" class="flex items-center gap-2 shrink-0"><!-- injected by app.js --></div>
+        <div class="w-px h-6 bg-nexus-border mx-1 shrink-0"></div>
+        <button id="toggleFreeOnly" data-active="false"
+          class="sys-badge shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-nexus-green text-nexus-green text-xs font-semibold bg-nexus-green/5"
+          data-active="false">
+          🎁 <span>Free Only</span>
+        </button>
+        <button id="clearFilters" class="shrink-0 px-3 py-1.5 rounded-full border border-nexus-border text-slate-400 hover:text-white hover:border-slate-500 text-xs transition">
+          Reset
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ MAIN CONTENT ============ -->
+  <main class="relative z-10 max-w-[1600px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
+    <!-- Status bar -->
+    <div class="flex flex-wrap items-center gap-3 mb-6 text-xs text-slate-400">
+      <div id="engineStatus" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-nexus-surface border border-nexus-border">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+        <span>Booting Nexus Data Engine…</span>
+      </div>
+      <div id="dealCounter" class="px-3 py-1.5 rounded-full bg-nexus-surface border border-nexus-border"></div>
+      <button id="refreshBtn" class="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-nexus-surface border border-nexus-border hover:border-nexus-cyan hover:text-white transition">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M5 9a7 7 0 0111.6-3M19 15a7 7 0 01-11.6 3"/></svg>
+        Refresh
+      </button>
+    </div>
+
+    <!-- Category sections injected here -->
+    <div id="sections" class="space-y-12"></div>
+
+    <!-- Empty state -->
+    <div id="emptyState" class="hidden text-center py-24">
+      <div class="text-6xl mb-4">🕹️</div>
+      <h3 class="text-xl font-bold text-slate-300">No deals match your filters</h3>
+      <p class="text-slate-500 mt-1">Try enabling more systems or clearing the search.</p>
+    </div>
+
+    <!-- Infinite scroll / Load More -->
+    <div id="loadMoreWrap" class="mt-12 flex flex-col items-center gap-3">
+      <button id="loadMoreBtn"
+        class="px-6 py-3 rounded-xl font-bold text-sm bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg shadow-glow hover:opacity-90 active:scale-95 transition disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none">
+        ⬇ Load More Deals
+      </button>
+      <p id="loadMoreNote" class="text-xs text-slate-500"></p>
+      <div id="scrollSentinel" class="h-1 w-full"></div>
+    </div>
+  </main>
+
+  <footer class="relative z-10 border-t border-nexus-border mt-10">
+    <div class="max-w-[1600px] mx-auto px-6 py-8 text-center text-xs text-slate-600">
+      <p>Nexus Game Hub · PC deals via the open <span class="text-slate-400">CheapShark API</span> · Console & subscription deals curated locally.</p>
+      <p class="mt-1">Prices are indicative — always confirm on the official storefront before buying. Not affiliated with any platform holder.</p>
+    </div>
+  </footer>
+
+  <!-- ============ FAVORITES PANEL ============ -->
+  <div data-overlay="favorites" class="fixed inset-0 z-50 hidden-init">
+    <div data-backdrop class="backdrop absolute inset-0 bg-black/70 backdrop-blur-sm opacity-0"></div>
+    <aside class="panel panel-right absolute right-0 top-0 h-full w-full max-w-md bg-nexus-surface border-l border-nexus-border shadow-2xl flex flex-col">
+      <div class="flex items-center justify-between p-5 border-b border-nexus-border">
+        <h2 class="text-lg font-bold flex items-center gap-2">⭐ My Favorites</h2>
+        <button data-close class="w-8 h-8 grid place-items-center rounded-lg hover:bg-nexus-card text-slate-400 hover:text-white transition text-xl">×</button>
+      </div>
+      <div class="px-5 py-3 border-b border-nexus-border flex items-center gap-2 overflow-x-auto no-scrollbar">
+        <span class="text-[11px] uppercase tracking-wider text-slate-500 shrink-0">Filter</span>
+        <div id="favFilterChips" class="flex gap-1.5"></div>
+      </div>
+      <div id="favoritesList" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
+    </aside>
+  </div>
+
+  <!-- ============ LIBRARY PANEL ============ -->
+  <div data-overlay="library" class="fixed inset-0 z-50 hidden-init">
+    <div data-backdrop class="backdrop absolute inset-0 bg-black/70 backdrop-blur-sm opacity-0"></div>
+    <aside class="panel panel-right absolute right-0 top-0 h-full w-full max-w-lg bg-nexus-surface border-l border-nexus-border shadow-2xl flex flex-col">
+      <div class="flex items-center justify-between p-5 border-b border-nexus-border">
+        <h2 class="text-lg font-bold flex items-center gap-2">📚 My Library</h2>
+        <button data-close class="w-8 h-8 grid place-items-center rounded-lg hover:bg-nexus-card text-slate-400 hover:text-white transition text-xl">×</button>
+      </div>
+
+      <!-- Add-owned form -->
+      <div class="p-5 border-b border-nexus-border bg-nexus-card/40">
+        <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-1.5">✍️ Add a game you own</h3>
+        <form id="ownedForm" class="space-y-2.5" autocomplete="off">
+          <div class="relative">
+            <input required id="ownedTitleInput" name="title" type="text" placeholder="Start typing a game title…" autocomplete="off"
+              class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
+            <div id="search-suggestions" class="hidden absolute z-40 left-0 right-0 mt-1 bg-nexus-card border border-nexus-border rounded-lg shadow-2xl max-h-64 overflow-y-auto"></div>
+          </div>
+          <div class="flex gap-2">
+            <select name="platform" class="flex-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan">
+              <option value="PC">PC</option>
+              <option value="PlayStation">PlayStation</option>
+              <option value="Xbox">Xbox</option>
+              <option value="Switch">Switch 1</option>
+              <option value="Switch2">Switch 2</option>
+            </select>
+            <input name="dlc" type="text" placeholder="DLC / add-ons (comma-separated)" class="flex-[1.4] bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
+          </div>
+          <button type="submit" class="w-full py-2 rounded-lg bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg font-bold text-sm hover:opacity-90 transition">
+            + Add to Library
+          </button>
+        </form>
+      </div>
+
+      <div class="flex-1 overflow-y-auto">
+        <!-- Library extensions: console search, Steam import, co-op lounge -->
+        <div id="libExtras" class="px-4 pt-4 space-y-2"></div>
+        <div class="px-4 pt-2 pb-1">
+          <h3 class="text-sm font-semibold text-slate-300 flex items-center gap-1.5">📚 Your Collection</h3>
+        </div>
+        <div id="libraryList" class="p-4 pt-2 space-y-3"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ============ ADMIN / MANUAL DEAL PANEL ============ -->
+  <div data-overlay="admin" class="fixed inset-0 z-50 hidden-init">
+    <div data-backdrop class="backdrop absolute inset-0 bg-black/70 backdrop-blur-sm opacity-0"></div>
+    <aside class="panel panel-right absolute right-0 top-0 h-full w-full max-w-md bg-nexus-surface border-l border-nexus-border shadow-2xl flex flex-col">
+      <div class="flex items-center justify-between p-5 border-b border-nexus-border">
+        <h2 class="text-lg font-bold flex items-center gap-2">➕ Manual Deal Entry</h2>
+        <button data-close class="w-8 h-8 grid place-items-center rounded-lg hover:bg-nexus-card text-slate-400 hover:text-white transition text-xl">×</button>
+      </div>
+      <div class="flex-1 overflow-y-auto">
+        <form id="adminForm" class="p-5 space-y-3">
+          <p class="text-xs text-slate-500">Inject a deal you found manually. It's saved to this device and shown alongside live deals.</p>
+          <div>
+            <label class="text-xs text-slate-400">Game title *</label>
+            <input required name="title" type="text" class="w-full mt-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-green" />
+          </div>
+          <div>
+            <label class="text-xs text-slate-400">Category *</label>
+            <select name="category" class="w-full mt-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-green">
+              <option value="free">🎁 100% Free Right Now</option>
+              <option value="pc">💻 PC Master Race</option>
+              <option value="playstation">💙 PlayStation Lounge</option>
+              <option value="xbox">💚 Xbox Arena</option>
+              <option value="nintendo">🛑 Nintendo eShop</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-slate-400">Platform tags (comma-separated)</label>
+            <input name="tags" type="text" placeholder="PS5, PC, SW2" class="w-full mt-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-green" />
+          </div>
+          <div class="flex gap-2">
+            <div class="flex-1">
+              <label class="text-xs text-slate-400">Retail price</label>
+              <input name="retail" type="number" step="0.01" min="0" placeholder="59.99" class="w-full mt-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-green" />
+            </div>
+            <div class="flex-1">
+              <label class="text-xs text-slate-400">Deal price</label>
+              <input name="sale" type="number" step="0.01" min="0" placeholder="19.99" class="w-full mt-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-green" />
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-slate-400">Cover image URL (optional)</label>
+            <input name="img" type="url" placeholder="https://…" class="w-full mt-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-green" />
+          </div>
+          <div>
+            <label class="text-xs text-slate-400">Store link (optional)</label>
+            <input name="url" type="url" placeholder="https://…" class="w-full mt-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-green" />
+          </div>
+          <button type="submit" class="w-full py-2.5 rounded-lg bg-nexus-green text-nexus-bg font-bold text-sm hover:opacity-90 transition">
+            💾 Save Deal Locally
+          </button>
+        </form>
+
+        <div class="px-5 pb-6">
+          <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center justify-between">
+            <span>🗂️ Your manual deals</span>
+          </h3>
+          <div id="adminList" class="space-y-2"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ============ GAME DETAIL MODAL ============ -->
+  <div id="game-detail-modal" class="fixed inset-0 z-[70] hidden-init">
+    <div data-detail-backdrop class="absolute inset-0 bg-black/80 backdrop-blur-md"></div>
+    <div data-detail-panel class="absolute inset-0 sm:inset-4 lg:inset-x-[6%] lg:inset-y-6 bg-nexus-surface sm:rounded-2xl border border-nexus-border shadow-2xl overflow-hidden flex flex-col">
+      <div id="detailContent" class="flex-1 overflow-y-auto"></div>
+    </div>
+  </div>
+
+  <!-- Back to Main Catalog (appears whenever an overlay/modal is open) -->
+  <button id="backToCatalog" class="hidden-init fixed top-[4.5rem] left-1/2 -translate-x-1/2 z-[75] px-4 py-2 rounded-full bg-nexus-cyan text-nexus-bg font-bold text-sm shadow-glow hover:opacity-90 active:scale-95 transition">
+    ← Back to Main Catalog
+  </button>
+
+  <!-- Toast host -->
+  <div id="toastHost" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center gap-2 pointer-events-none"></div>
+
+  <style>.no-scrollbar::-webkit-scrollbar{display:none} .no-scrollbar{scrollbar-width:none}</style>
+  <script src="app.js"></script>
+</body>
+</html>

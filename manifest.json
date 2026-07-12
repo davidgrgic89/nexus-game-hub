@@ -1,0 +1,29 @@
+{
+  "name": "Nexus Game Hub",
+  "short_name": "NexusHub",
+  "description": "Aggregated gaming discounts, price drops, and 100% free-to-keep games across PC, Xbox, PlayStation, and Nintendo Switch.",
+  "id": "/",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f",
+  "categories": ["games", "entertainment", "shopping"],
+  "lang": "en-US",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20192%20192'%3E%3Crect%20width='192'%20height='192'%20rx='40'%20fill='%230a0a0f'/%3E%3Ctext%20x='96'%20y='128'%20font-size='110'%20text-anchor='middle'%20font-family='sans-serif'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Crect%20width='512'%20height='512'%20rx='108'%20fill='%230a0a0f'/%3E%3Ctext%20x='256'%20y='340'%20font-size='300'%20text-anchor='middle'%20font-family='sans-serif'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+# ---- Secrets & local configuration ----
+# API keys / tokens — never commit these
+.env
+.env.*
+*.local
+secrets.json
+config.local.json
+
+# Claude Code local machine settings (permission allowlist, etc.)
+.claude/settings.local.json
+
+# ---- Dependencies & build output ----
+node_modules/
+dist/
+build/
+*.tgz
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- OS & editor junk ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
