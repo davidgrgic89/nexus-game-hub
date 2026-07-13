@@ -2466,18 +2466,27 @@ async function importSteamLibrary(input) {
   // 3) Parse the owned-games list. Primary: embedded rgGames on the games page.
   //    Fallback: the games XML feed.
   const id64 = profile.steamID64;
+  // Try each keyless games source in turn; the embedded rgGames JSON gives the
+  // cleanest names, the XML feed (with/without trailing slash) is the reliable
+  // fallback. First non-empty result wins. All of these need "Game details"
+  // (a setting separate from profile visibility) to be Public.
+  const attempts = [
+    { url: `https://steamcommunity.com/profiles/${id64}/games/?tab=all`,        parse: parseRgGames },
+    { url: `https://steamcommunity.com/profiles/${id64}/games/?tab=all&xml=1`,  parse: parseGamesXml },
+    { url: `https://steamcommunity.com/profiles/${id64}/games?tab=all&xml=1`,   parse: parseGamesXml },
+  ];
   let games = null;
-  try { games = parseRgGames(await fetchViaProxyText(`https://steamcommunity.com/profiles/${id64}/games/?tab=all`)); }
-  catch { /* fall through to XML */ }
-  if (!games || !games.length) {
-    try { games = parseGamesXml(await fetchViaProxyText(`https://steamcommunity.com/profiles/${id64}/games?tab=all&xml=1`)); }
-    catch { /* handled below */ }
+  for (const a of attempts) {
+    try {
+      const parsed = a.parse(await fetchViaProxyText(a.url));
+      if (parsed && parsed.length) { games = parsed; break; }
+    } catch { /* try the next source */ }
   }
 
   if (!games || !games.length) {
-    // Public profile, but the list came back empty. Two causes: (a) game details
-    // hidden, or (b) Steam now login-gates the games list even for public
-    // profiles. Signal privacy first (actionable), the caller adds nuance.
+    // Profile visibility is public, but the games list is empty. The overwhelming
+    // cause is that "Game details" — a privacy setting distinct from profile
+    // visibility — is not set to Public. Surface that as the actionable fix.
     const e = new Error('Games list unavailable'); e.gated = true; throw e;
   }
 
@@ -2620,14 +2629,15 @@ function renderLibraryExtras() {
 
       <!-- Automated privacy-protection injector -->
       <div id="steam-privacy-helper" class="hidden rounded-xl border border-amber-500/50 p-3" style="background:#241d08">
-        <div class="font-bold text-amber-300 text-sm mb-1">🔒 Sync Unsuccessful: Your Steam Game Details are set to Private.</div>
-        <p class="text-xs text-amber-200/80 mb-2">To sync your PC library in one tap, please update your account settings:</p>
+        <div class="font-bold text-amber-300 text-sm mb-1">🔒 Sync Unsuccessful — we couldn't read your games list</div>
+        <p class="text-xs text-amber-200/80 mb-2">Making your profile public isn't enough: <b>Game details</b> is a <b>separate</b> privacy setting, and it's the one that exposes your games. Set it to Public:</p>
         <ol class="text-xs text-amber-100/90 list-decimal list-inside space-y-1">
-          <li>Open Steam and go to <b>Edit Profile</b>.</li>
-          <li>Click on <b>Privacy Settings</b> in the left sidebar.</li>
-          <li>Toggle <b>'My Profile'</b> and <b>'Game Details'</b> to <b>PUBLIC</b>.</li>
-          <li>Tap the <b>'Sync Library'</b> button below to refresh!</li>
+          <li>Open Steam → <b>Edit Profile</b> → <b>Privacy Settings</b>.</li>
+          <li>Set <b>'My profile'</b> to <b>Public</b>.</li>
+          <li>Set <b>'Game details'</b> to <b>Public</b> — <span class="text-amber-300">this is the one that was blocking you.</span></li>
+          <li>Wait ~30s for Steam to apply it, then tap <b>'Sync Library'</b> below.</li>
         </ol>
+        <p class="text-[11px] text-amber-200/60 mt-2">Already Public and still failing? Steam occasionally login-gates the list — use <b>Console Search</b> or <b>Add Manually</b> above to build your library instead.</p>
         <button id="steamSyncRetry" class="mt-2 w-full py-2 rounded-lg bg-amber-400 text-nexus-bg font-bold text-xs hover:opacity-90 transition">🔄 Sync Library</button>
       </div>
     </div>
@@ -2720,12 +2730,12 @@ async function handleSteamImport() {
     if (status) status.innerHTML = `<span class="text-nexus-green">✓ Imported ${added} new game${added === 1 ? '' : 's'} from ${total} public titles.</span>`;
     toast(`Steam import: +${added} games`, 'ok');
   } catch (err) {
-    if (err.privacy) {
+    if (err.privacy || err.gated) {
+      // Both cases resolve the same way for the user: the games list isn't
+      // readable. Show ONE coherent helper (no contradictory second message).
+      // err.privacy = the profile itself is private; err.gated = profile is
+      // public but "Game details" (a separate setting) still isn't.
       if (status) status.innerHTML = '';
-      if (helper) helper.classList.remove('hidden');
-    } else if (err.gated) {
-      // Profile is public but Steam login-gates the games list — be honest.
-      if (status) status.innerHTML = `<span class="text-amber-400 leading-relaxed">⚠ Profile is public, but Steam now requires a login to serve the full games list (a Valve platform change), so keyless import can't read it. Use <b>Console Search</b> above or the manual add form to build your library.</span>`;
       if (helper) helper.classList.remove('hidden');
     } else {
       if (status) status.innerHTML = `<span class="text-amber-400">⚠ ${escapeHtml(err.message)}</span>`;
