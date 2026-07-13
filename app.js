@@ -57,7 +57,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · cloudflare-pages';
+const APP_BUILD = 'v2026.07.13 · steam-api-sync';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -2410,10 +2410,16 @@ const normTitle = (t = '') => t.toLowerCase().replace(/\s+/g, ' ').trim();
 
 function ownedTitleSet() { return new Set(State.library.map(g => normTitle(g.title))); }
 
-function addOwnedGame(title, platform = 'PC') {
+function addOwnedGame(title, platform = 'PC', opts = {}) {
   const n = normTitle(title);
   if (!n || State.library.some(g => normTitle(g.title) === n)) return false;
-  State.library.push({ id: uid(), title: title.trim(), platform, dlc: [], owned: true });
+  const entry = { id: uid(), title: title.trim(), platform, dlc: [], owned: true };
+  // Steam import now carries a real appID -> attach authentic vertical cover art.
+  if (opts.appid) {
+    entry.appid = String(opts.appid);
+    entry.imgs = [`https://cdn.cloudflare.steamstatic.com/steam/apps/${opts.appid}/library_600x900.jpg`];
+  }
+  State.library.push(entry);
   return true;
 }
 function removeOwnedByTitle(title) {
@@ -2580,31 +2586,45 @@ function parseSteamProfileXml(xml) {
   const priv = /<privacyState>(.*?)<\/privacyState>/.exec(xml);
   return { steamID64: id ? id[1] : null, privacyState: priv ? priv[1] : null };
 }
-// Extract the embedded `var rgGames = [ … ];` array from a games page's HTML.
-function parseRgGames(html) {
-  const m = html.match(/var\s+rgGames\s*=\s*(\[[\s\S]*?\]);/);
-  if (!m) return null;
-  try { return JSON.parse(m[1]).map(g => ({ appid: g.appid, name: g.name })).filter(g => g.name); }
-  catch { return null; }
-}
-// Fallback: parse the games XML feed (<game><appID><name>…).
-function parseGamesXml(xml) {
-  const games = [];
-  const re = /<game>[\s\S]*?<appID>(\d+)<\/appID>[\s\S]*?<name>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/name>/g;
-  let m;
-  while ((m = re.exec(xml))) games.push({ appid: Number(m[1]), name: m[2].trim() });
-  return games;
+// Owned-games via the official Steam Web API (IPlayerService/GetOwnedGames),
+// routed through OUR Cloudflare function (index 0) which injects the secret key
+// server-side. Public CORS proxies can't inject the key, so this must NOT fan out
+// across the proxy array. Steam login-gates the old keyless /games/ page, so this
+// is the only reliable path. Distinguishes the missing-key / not-deployed cases so
+// the UI can explain them instead of a generic failure.
+async function fetchOwnedGames(id64) {
+  const api = `https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/`
+    + `?steamid=${id64}&include_appinfo=1&include_played_free_games=1&format=json`;
+  let res;
+  try {
+    res = await fetch(CORS_PROXIES[0](api));   // our /api/steam function only
+  } catch {
+    const e = new Error('Could not reach the Steam sync service.'); e.noFn = true; throw e;
+  }
+  if (res.status === 404) {
+    const e = new Error('Steam sync runs only on the deployed site (the proxy function is not available here).');
+    e.noFn = true; throw e;
+  }
+  if (res.status === 501) {
+    const e = new Error('Steam sync isn’t set up yet: the server is missing its Steam API key. Ask the site owner to add the STEAM_API_KEY secret.');
+    e.noKey = true; throw e;
+  }
+  if (!res.ok) throw new Error('Steam Web API error (HTTP ' + res.status + ').');
+  let json;
+  try { json = JSON.parse(await res.text()); } catch { throw new Error('Steam returned an unreadable response.'); }
+  return (json && json.response) || {};
 }
 
-// KEYLESS import: resolve the public profile (vanity or ID64) through the proxy
-// array, inspect privacy, then parse the owned-games list — no Web API key.
+// Import: resolve the public profile (vanity or ID64) keylessly, inspect privacy,
+// then pull the owned-games list via the keyed Web API.
 async function importSteamLibrary(input) {
   const parsed = parseSteamId(input);
   if (!parsed) throw new Error('Unrecognized input — enter a 17-digit SteamID64 or your custom vanity name.');
   const path = parsed.type === 'id' ? `profiles/${parsed.id}` : `id/${encodeURIComponent(parsed.vanity)}`;
 
   // 1) Keyless profile summary: resolves a vanity name -> SteamID64 and reveals
-  //    the privacy state, all without a developer token.
+  //    the privacy state. (Still works anonymously — only the games *list* page is
+  //    login-gated, not the profile summary XML.)
   const summaryXml = await fetchViaProxyText(`https://steamcommunity.com/${path}/?xml=1`,
     (b) => /<steamID64>\d+<\/steamID64>/.test(b) || /<privacyState>/.test(b));
   const profile = parseSteamProfileXml(summaryXml);
@@ -2618,38 +2638,17 @@ async function importSteamLibrary(input) {
     const e = new Error('Profile is private'); e.privacy = true; throw e;
   }
 
-  // 3) Parse the owned-games list. Primary: embedded rgGames on the games page.
-  //    Fallback: the games XML feed.
-  const id64 = profile.steamID64;
-  // Try each keyless games source in turn; the embedded rgGames JSON gives the
-  // cleanest names, the XML feed (with/without trailing slash) is the reliable
-  // fallback. First non-empty result wins. All of these need "Game details"
-  // (a setting separate from profile visibility) to be Public.
-  const attempts = [
-    { url: `https://steamcommunity.com/profiles/${id64}/games/?tab=all`,        parse: parseRgGames },
-    { url: `https://steamcommunity.com/profiles/${id64}/games/?tab=all&xml=1`,  parse: parseGamesXml },
-    { url: `https://steamcommunity.com/profiles/${id64}/games?tab=all&xml=1`,   parse: parseGamesXml },
-  ];
-  // Accept only bodies that actually contain a games list (embedded rgGames or
-  // <game> XML), so a proxy's 200 error page doesn't masquerade as "no games".
-  const looksLikeGames = (b) => /rgGames\s*=/.test(b) || /<game>/.test(b);
-  let games = null;
-  for (const a of attempts) {
-    try {
-      const parsed = a.parse(await fetchViaProxyText(a.url, looksLikeGames));
-      if (parsed && parsed.length) { games = parsed; break; }
-    } catch { /* try the next source */ }
-  }
-
-  if (!games || !games.length) {
-    // Profile visibility is public, but the games list is empty. The overwhelming
-    // cause is that "Game details" — a privacy setting distinct from profile
-    // visibility — is not set to Public. Surface that as the actionable fix.
+  // 3) Owned games via the official Web API (key injected server-side).
+  const resp = await fetchOwnedGames(profile.steamID64);
+  const games = Array.isArray(resp.games) ? resp.games : [];
+  if (!games.length) {
+    // Valid key + public profile but no games array => "Game details" is private
+    // (a setting distinct from profile visibility), or the account owns nothing.
     const e = new Error('Games list unavailable'); e.gated = true; throw e;
   }
 
   let added = 0;
-  games.forEach(g => { if (g.name && addOwnedGame(g.name, 'PC')) added++; });
+  games.forEach(g => { if (g.name && addOwnedGame(g.name, 'PC', { appid: g.appid })) added++; });
   State.persist();
   renderLibrary(); renderAll(); renderConsoleResults($('#consoleSearchInput')?.value || '');
   return { total: games.length, added };
@@ -2777,9 +2776,9 @@ function renderLibraryExtras() {
   </details>
 
   <details class="lib-section">
-    <summary>📥 Import Steam Library (Keyless)</summary>
+    <summary>📥 Import Steam Library</summary>
     <div class="pt-2 space-y-2">
-      <p class="text-xs text-slate-500">Enter your public SteamID64 <b>or</b> custom vanity name — no API key needed. Your profile's <b>Game Details</b> must be set to Public.</p>
+      <p class="text-xs text-slate-500">Enter your public SteamID64 <b>or</b> custom vanity name. Your profile's <b>Game Details</b> must be set to Public so Steam will share your games.</p>
       <input id="steamIdInput" type="text" placeholder="76561198… or your vanity name (e.g. gabelogannewell)" autocomplete="off"
         class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
       <button id="steamImportBtn" class="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg font-bold text-sm hover:opacity-90 transition">🔄 Sync Library</button>
@@ -2799,7 +2798,7 @@ function renderLibraryExtras() {
           <li>Set <b>'Game details'</b> to <b>Public</b> — <span class="text-amber-300">this is the one that was blocking you.</span></li>
           <li>Wait ~30s for Steam to apply it, then tap <b>'Sync Library'</b> below.</li>
         </ol>
-        <p class="text-[11px] text-amber-200/60 mt-2">Already Public and still failing? Steam occasionally login-gates the list — use <b>Console Search</b> or <b>Add Manually</b> above to build your library instead.</p>
+        <p class="text-[11px] text-amber-200/60 mt-2">Already Public and still failing? Make sure the individual games aren't hidden, wait ~30s, and retry — or use <b>Console Search</b> or <b>Add Manually</b> above to build your library instead.</p>
         <button id="steamSyncRetry" class="mt-2 w-full py-2 rounded-lg bg-amber-400 text-nexus-bg font-bold text-xs hover:opacity-90 transition">🔄 Sync Library</button>
       </div>
     </div>

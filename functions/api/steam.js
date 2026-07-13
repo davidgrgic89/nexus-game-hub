@@ -6,8 +6,18 @@
 //   /api/steam?url=<encoded steam url>
 // (File path functions/api/steam.js maps to the /api/steam route on Pages.)
 // Hosts are allow-listed so it can't be abused as an open proxy.
+//
+// It ALSO injects the server-side STEAM_API_KEY secret for authenticated Steam
+// Web API calls (IPlayerService / ISteamUser). Steam now login-gates the old
+// keyless /games/ list page, so the library importer uses GetOwnedGames instead —
+// and the key must stay server-side, never shipped to the browser. Set the secret
+// in the Pages project: Settings -> Variables and Secrets -> STEAM_API_KEY.
 
 const ALLOWED_HOST = /^https:\/\/(store\.steampowered\.com|steamcommunity\.com|api\.steampowered\.com)\//i;
+
+// Web API paths that need the secret key injected. Scoped to the two services the
+// app actually calls, so the key can't be borrowed for arbitrary Steam endpoints.
+const KEYED_PATH = /^\/(IPlayerService|ISteamUser)\//i;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -16,7 +26,7 @@ const CORS = {
 };
 
 export async function onRequest(context) {
-  const { request } = context;
+  const { request, env } = context;
 
   if (request.method === 'OPTIONS') {
     return new Response('', { status: 204, headers: CORS });
@@ -30,8 +40,32 @@ export async function onRequest(context) {
     return new Response('Host not allowed', { status: 403, headers: CORS });
   }
 
+  let targetUrl;
   try {
-    const upstream = await fetch(target, {
+    targetUrl = new URL(target);
+  } catch {
+    return new Response('Malformed ?url= value', { status: 400, headers: CORS });
+  }
+
+  // Authenticated Steam Web API call: inject the secret key server-side.
+  const needsKey =
+    targetUrl.hostname.toLowerCase() === 'api.steampowered.com' && KEYED_PATH.test(targetUrl.pathname);
+  if (needsKey) {
+    const key = env && env.STEAM_API_KEY;
+    if (!key) {
+      return new Response(
+        JSON.stringify({
+          error: 'steam_api_key_missing',
+          message: 'Steam library sync is not configured: the STEAM_API_KEY secret is not set on this deployment.',
+        }),
+        { status: 501, headers: { ...CORS, 'Content-Type': 'application/json' } }
+      );
+    }
+    targetUrl.searchParams.set('key', key);
+  }
+
+  try {
+    const upstream = await fetch(targetUrl.toString(), {
       redirect: 'follow',
       headers: {
         // Present as a real browser — Steam serves cleaner responses and is less
@@ -51,6 +85,8 @@ export async function onRequest(context) {
         ...CORS,
         'Content-Type': upstream.headers.get('content-type') || 'application/json',
         // Cache successful lookups for an hour to stay well within Steam's limits.
+        // (Never let a keyed URL leak into a shared cache key — the query string,
+        // incl. the injected key, is part of the upstream request only, not ours.)
         'Cache-Control': upstream.ok ? 'public, max-age=3600' : 'no-store',
       },
     });
