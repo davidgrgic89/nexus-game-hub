@@ -1030,7 +1030,7 @@ function cardHTML(deal) {
 
   return `
   <article class="deal-card anim-in group relative flex flex-col rounded-2xl bg-nexus-card border border-nexus-border overflow-hidden"
-           data-id="${deal.id}">
+           data-id="${deal.id}" tabindex="0" role="button" aria-label="View details for ${escapeHtml(deal.title)}">
     <div class="cover-frame relative aspect-[2/3] bg-nexus-bg shadow-lg"${imgs.length ? '' : ` data-harvest="${escapeHtml(deal.title)}"`}>
       <div class="cover-holder block w-full h-full">
         ${fallbackHTML}
@@ -2212,7 +2212,13 @@ function wireEvents() {
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.matches('[data-dlc-add]')) { e.preventDefault(); addDlc(e.target.dataset.dlcAdd); }
+    if (e.key === 'Enter' && e.target.matches('[data-dlc-add]')) { e.preventDefault(); addDlc(e.target.dataset.dlcAdd); return; }
+    // Keyboard activation for focusable game cards (Enter or Space opens detail).
+    // Ignore when the focus is on an inner control (fav/own buttons, links).
+    if ((e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
+      const card = e.target.closest?.('.deal-card');
+      if (card && card === e.target && card.dataset.id) { e.preventDefault(); openDetail(card.dataset.id); }
+    }
   });
 
   $('#toggleFreeOnly').addEventListener('click', (e) => {
