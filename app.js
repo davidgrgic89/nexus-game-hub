@@ -57,7 +57,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · steam-api-sync';
+const APP_BUILD = 'v2026.07.13 · trailer-mp4-fix';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -1888,8 +1888,15 @@ async function fetchSteamMeta(appid) {
   const d = entry.data;
   const screenshots = (d.screenshots || []).map(s => _https(s.path_full)).filter(Boolean);
   const movies = (d.movies || []).map(m => {
-    const mp4 = _https(m.mp4?.max || m.mp4?.['480'] || '');
-    const webm = _https(m.webm?.max || m.webm?.['480'] || '');
+    let mp4 = _https(m.mp4?.max || m.mp4?.['480'] || '');
+    let webm = _https(m.webm?.max || m.webm?.['480'] || '');
+    // Steam migrated store trailers to adaptive manifests (dash_h264/hls_h264) and
+    // dropped the mp4/webm fields, so those come back empty now. The direct files
+    // still live at a derivable path, so rebuild the mp4 from the movie id — a plain
+    // <video> plays it with no streaming lib (verified: it returns video/mp4).
+    if (!mp4 && !webm && m.id) {
+      mp4 = `https://video.akamai.steamstatic.com/store_trailers/${m.id}/movie_max.mp4`;
+    }
     return { name: m.name || 'Video', poster: _https(m.thumbnail || ''),
              src: mp4 || webm, type: mp4 ? 'video/mp4' : 'video/webm' };
   }).filter(m => m.src);
