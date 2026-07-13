@@ -733,6 +733,7 @@ const State = {
   filters: {
     systems: new Set(SYSTEMS.map(s => s.id)),
     freeOnly: false,
+    minDiscount: 0,          // 0 = any; else require deal.discount >= this
     search: '',
     favPlatform: 'all',
     subFilter: { playstation: 'all', xbox: 'all', nintendo: 'all' },
@@ -784,6 +785,9 @@ function dealPasses(deal) {
   const cat = categoryMeta(deal.category);
   if (!cat.systems.some(s => State.filters.systems.has(s))) return false;
   if (State.filters.freeOnly && deal.sale !== 0) return false;
+  // Min-discount gate: only actual discounts count (giveaways read as 100% off;
+  // permanently free-to-play and full-price titles have 0% and are filtered out).
+  if (State.filters.minDiscount > 0 && (deal.discount || 0) < State.filters.minDiscount) return false;
   if (State.filters.search && !deal.title.toLowerCase().includes(State.filters.search)) return false;
   if (deal.category === 'free' || deal.category === 'pc') {
     if (!storeMatch(deal, State.filters.storeFilter[deal.category])) return false;
@@ -1757,6 +1761,44 @@ function renderDetail(deal) {
   </div>`;
 }
 
+// Accessible focus management for overlays: on open, remember what was focused
+// and move focus inside; trap Tab within the overlay; on close, restore focus to
+// the opener. Stack-based so nested overlays (panel → game detail) unwind cleanly.
+const FocusManager = {
+  _stack: [],
+  _focusable(root) {
+    return [...root.querySelectorAll(
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),video[controls],[tabindex]:not([tabindex="-1"])'
+    )].filter(el => el.getClientRects().length > 0);
+  },
+  activate(container) {
+    if (!container) return;
+    const entry = { container, restore: document.activeElement, handler: null };
+    entry.handler = (e) => {
+      if (e.key !== 'Tab') return;
+      const items = this._focusable(container);
+      if (!items.length) { e.preventDefault(); return; }
+      const first = items[0], last = items[items.length - 1], active = document.activeElement;
+      if (e.shiftKey && (active === first || !container.contains(active))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (active === last || !container.contains(active))) { e.preventDefault(); first.focus(); }
+    };
+    container.addEventListener('keydown', entry.handler);
+    this._stack.push(entry);
+    const f = this._focusable(container);
+    (f[0] || container).focus({ preventScroll: true });
+  },
+  deactivate(container) {
+    let idx = -1;
+    for (let i = this._stack.length - 1; i >= 0; i--) {
+      if (!container || this._stack[i].container === container) { idx = i; break; }
+    }
+    if (idx < 0) return;
+    const entry = this._stack.splice(idx, 1)[0];
+    entry.container.removeEventListener('keydown', entry.handler);
+    try { entry.restore?.focus?.({ preventScroll: true }); } catch { /* opener gone */ }
+  },
+};
+
 function openDetail(id) {
   const deal = findDeal(id);
   if (!deal) return;
@@ -1771,6 +1813,7 @@ function openDetail(id) {
   modal.classList.add('open');
   document.body.style.overflow = 'hidden';
   updateBackToCatalog();
+  FocusManager.activate(modal);   // trap focus + remember opener for restore
   enrichDetail(deal);
   loadHistoricalLow(deal);
 }
@@ -1783,9 +1826,8 @@ function closeDetail() {
   document.body.style.overflow = otherPanelOpen ? 'hidden' : '';
   setTimeout(() => { modal.classList.add('hidden-init'); updateBackToCatalog(); }, 300);
   State.activeDetail = null;
-  // Navigation memory: hand focus back to search so context is retained.
-  const s = $('#searchInput');
-  if (s && s.value) s.focus({ preventScroll: true });
+  // Return focus to whatever opened the modal (e.g. the game card).
+  FocusManager.deactivate(modal);
 }
 
 // Refresh the open modal in place (preserving scroll) after a fav/own toggle.
@@ -2066,12 +2108,14 @@ async function loadHistoricalLow(deal) {
 function resetFilters() {
   State.filters.systems = new Set(SYSTEMS.map(s => s.id));
   State.filters.freeOnly = false;
+  State.filters.minDiscount = 0;
   State.filters.search = '';
   Object.keys(State.filters.subFilter).forEach(k => State.filters.subFilter[k] = 'all');
   Object.values(State.filters.storeFilter).forEach(set => set.clear());
   State.searchResults = [];                       // flush encyclopedia results
   const free = $('#toggleFreeOnly');
   free.dataset.active = 'false'; free.style.opacity = '';
+  const md = $('#minDiscountFilter'); if (md) md.value = '0';
   $('#searchInput').value = '';
   $('#searchInputMobile').value = '';
   const csi = $('#consoleSearchInput'); if (csi) { csi.value = ''; renderConsoleResults(''); }
@@ -2099,9 +2143,11 @@ function openPanel(name) {
   if (name === 'library') { renderLibrary(); renderLibraryExtras(); }
   if (name === 'admin') renderAdminList();
   updateBackToCatalog();
+  FocusManager.activate($('.panel', overlay));
 }
 
 function closePanel(overlay) {
+  FocusManager.deactivate($('.panel', overlay));
   $('[data-backdrop]', overlay).style.opacity = '0';
   $('.panel', overlay).classList.remove('open');
   document.body.style.overflow = '';
@@ -2177,6 +2223,11 @@ function wireEvents() {
         game.dlc[chk.dataset.dlcIdx].owned = chk.checked;
         State.persist(); renderLibrary();
       }
+      return;
+    }
+    if (e.target.id === 'minDiscountFilter') {
+      State.filters.minDiscount = Number(e.target.value) || 0;
+      renderAll();
       return;
     }
     const sf = e.target.closest('[data-subfilter]');
