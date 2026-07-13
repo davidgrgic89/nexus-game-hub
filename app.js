@@ -57,7 +57,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · videos-hero';
+const APP_BUILD = 'v2026.07.13 · cloudflare-pages';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -2473,10 +2473,10 @@ function parseSteamId(input) {
 // allorigins.win -> api.allorigins.win/get, corsproxy.io -> /?url=, freeboard.io ->
 // thingproxy.freeboard.io/fetch.)
 const CORS_PROXIES = [
-  // Our OWN Netlify serverless proxy — same-origin, reliable, no third party.
+  // Our OWN Cloudflare Pages Function — same-origin, reliable, no third party.
   // On the deployed site this resolves and always works; on local/other hosts it
   // 404s and we fall through to the public proxies below.
-  (u) => `/.netlify/functions/steam?url=${encodeURIComponent(u)}`,      // raw body
+  (u) => `/api/steam?url=${encodeURIComponent(u)}`,                     // raw body
   (u) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`, // raw body
   (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,          // raw body
   (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, // wraps body in .contents
@@ -2515,7 +2515,7 @@ async function fetchViaProxyText(targetUrl, validate) {
 
 // Human labels for each proxy row in the connection diagnostic.
 function proxyLabel(i) {
-  return ['Netlify function (this site)', 'codetabs.com', 'corsproxy.io', 'allorigins.win', 'thingproxy'][i] || ('proxy ' + (i + 1));
+  return ['Cloudflare function (this site)', 'codetabs.com', 'corsproxy.io', 'allorigins.win', 'thingproxy'][i] || ('proxy ' + (i + 1));
 }
 
 // Probe every proxy against a known-good public appdetails call (Team Fortress 2,
@@ -2570,7 +2570,7 @@ async function testSteamConnection() {
     : '';
   const summary = anyOk
     ? `<div class="text-nexus-green font-semibold mt-1">✓ At least one proxy works — screenshots & sync can reach Steam.</div>`
-    : `<div class="text-amber-400 font-semibold mt-1">⚠ No proxy could reach Steam. If the Netlify-function row is 404, you're on a site without the serverless proxy (use the GitHub-connected deploy), or the last deploy failed.</div>`;
+    : `<div class="text-amber-400 font-semibold mt-1">⚠ No proxy could reach Steam. If the Cloudflare-function row is 404, you're on a site without the serverless proxy (use the GitHub-connected deploy), or the last deploy failed.</div>`;
   out.innerHTML = `<div class="rounded-lg border border-nexus-border bg-nexus-bg p-2 mt-1">${rowsHTML}${mediaLine}${summary}</div>`;
 }
 

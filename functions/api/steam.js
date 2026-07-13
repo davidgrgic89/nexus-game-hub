@@ -1,9 +1,10 @@
-// Serverless Steam proxy for Nexus Game Hub.
+// Cloudflare Pages Function — Steam proxy for Nexus Game Hub.
 // Steam's public endpoints (appdetails, community profiles) block direct browser
 // requests with no CORS headers. Free public CORS proxies are unreliable, so we
-// run our own on Netlify: this function fetches Steam server-side (no CORS limit)
-// and returns the raw body to the front-end. Called as:
-//   /.netlify/functions/steam?url=<encoded steam url>
+// run our own: this function fetches Steam server-side (no CORS limit) and returns
+// the raw body to the front-end. Reachable at:
+//   /api/steam?url=<encoded steam url>
+// (File path functions/api/steam.js maps to the /api/steam route on Pages.)
 // Hosts are allow-listed so it can't be abused as an open proxy.
 
 const ALLOWED_HOST = /^https:\/\/(store\.steampowered\.com|steamcommunity\.com|api\.steampowered\.com)\//i;
@@ -14,17 +15,19 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: CORS, body: '' };
+export async function onRequest(context) {
+  const { request } = context;
+
+  if (request.method === 'OPTIONS') {
+    return new Response('', { status: 204, headers: CORS });
   }
 
-  const target = event.queryStringParameters && event.queryStringParameters.url;
+  const target = new URL(request.url).searchParams.get('url');
   if (!target) {
-    return { statusCode: 400, headers: CORS, body: 'Missing ?url= parameter' };
+    return new Response('Missing ?url= parameter', { status: 400, headers: CORS });
   }
   if (!ALLOWED_HOST.test(target)) {
-    return { statusCode: 403, headers: CORS, body: 'Host not allowed' };
+    return new Response('Host not allowed', { status: 403, headers: CORS });
   }
 
   try {
@@ -42,17 +45,19 @@ exports.handler = async (event) => {
       },
     });
     const body = await upstream.text();
-    return {
-      statusCode: upstream.status,
+    return new Response(body, {
+      status: upstream.status,
       headers: {
         ...CORS,
         'Content-Type': upstream.headers.get('content-type') || 'application/json',
         // Cache successful lookups for an hour to stay well within Steam's limits.
         'Cache-Control': upstream.ok ? 'public, max-age=3600' : 'no-store',
       },
-      body,
-    };
+    });
   } catch (err) {
-    return { statusCode: 502, headers: CORS, body: 'Upstream fetch failed: ' + (err && err.message || err) };
+    return new Response('Upstream fetch failed: ' + ((err && err.message) || err), {
+      status: 502,
+      headers: CORS,
+    });
   }
-};
+}

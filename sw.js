@@ -6,12 +6,12 @@
  *    HTML/JS/CSS (no stale-shell surprises after a deploy), while offline
  *    visitors fall back to the cached copy (navigations fall back to index.html).
  *  - Leaves cross-origin traffic (Steam CDN images, CheapShark API) and our own
- *    /.netlify/ serverless proxy completely untouched — those must always hit the
- *    network so deals/screenshots are never served stale.
+ *    /api/ serverless proxy (Cloudflare Pages Function) completely untouched —
+ *    those must always hit the network so deals/screenshots are never served stale.
  *
  * Bump CACHE when the shell asset list changes to retire old caches.
  */
-const CACHE = 'nexus-shell-v1';
+const CACHE = 'nexus-shell-v2';
 const SHELL = ['./', './index.html', './app.js', './styles.css', './manifest.json'];
 
 self.addEventListener('install', (event) => {
@@ -47,7 +47,7 @@ self.addEventListener('fetch', (event) => {
   // Cross-origin (Steam images, APIs) and the serverless proxy: hit the network
   // directly, no caching — these must stay fresh.
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/.netlify/')) return;
+  if (url.pathname.startsWith('/api/')) return;
 
   // Network-first with cache fallback.
   event.respondWith(
