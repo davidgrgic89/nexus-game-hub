@@ -50,8 +50,14 @@ const STORAGE = {
   favorites: 'nexus.favorites.v1',
   library:   'nexus.library.v1',
   manual:    'nexus.manual.v1',
-  meta:      'nexus.meta.v1',
+  // Bumped to v2: discards metadata cached before the hardened Steam proxy /
+  // age-gate fixes, so every game re-enriches and can finally pick up trailers.
+  meta:      'nexus.meta.v2',
 };
+
+// Visible build marker (shown in the footer) so it's obvious at a glance which
+// deploy is live. Bump on each push that changes user-facing behavior.
+const APP_BUILD = 'v2026.07.13 · videos-hero';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -2519,9 +2525,11 @@ function proxyLabel(i) {
 async function testSteamConnection() {
   const out = $('#steamDiagResult');
   if (out) out.innerHTML = '<span class="text-nexus-cyan">⏳ Probing each proxy against Steam (appid 440)…</span>';
+  // TF2 (440) has both screenshots and a trailer, so a good response proves the
+  // whole media pipeline — including that `movies` survive the proxy hop.
   const testUrl = 'https://store.steampowered.com/api/appdetails?appids=440&l=english';
   const rows = [];
-  let anyOk = false;
+  let anyOk = false, media = null;
   for (let i = 0; i < CORS_PROXIES.length; i++) {
     const t0 = Date.now();
     const controller = new AbortController();
@@ -2532,7 +2540,14 @@ async function testSteamConnection() {
       const raw = await res.text();
       let body = raw;
       try { const j = JSON.parse(raw); if (j && typeof j.contents === 'string') body = j.contents; } catch { /* raw */ }
-      try { const d = JSON.parse(body); ok = !!(d && d['440'] && d['440'].success); } catch { ok = false; }
+      try {
+        const d = JSON.parse(body);
+        ok = !!(d && d['440'] && d['440'].success);
+        if (ok && !media) {
+          const data = d['440'].data || {};
+          media = { movies: (data.movies || []).length, shots: (data.screenshots || []).length };
+        }
+      } catch { ok = false; }
       if (ok) { verdict = 'OK'; anyOk = true; }
       else if (!res.ok) { verdict = 'HTTP ' + res.status; detail = res.status === 404 ? ' (function not deployed here?)' : ''; }
       else { verdict = 'bad payload'; detail = ' (reachable, but no valid Steam JSON)'; }
@@ -2550,10 +2565,13 @@ async function testSteamConnection() {
        <span class="text-slate-300">${escapeHtml(r.label)}</span>
        <span class="ml-auto ${r.ok ? 'text-nexus-green' : 'text-slate-500'}">${escapeHtml(r.verdict)}${escapeHtml(r.detail)} · ${r.ms}ms</span>
      </div>`).join('');
+  const mediaLine = media
+    ? `<div class="mt-1 ${media.movies ? 'text-nexus-green' : 'text-amber-400'}">Test game (TF2): ${media.shots} screenshots, ${media.movies} trailer/gameplay clip${media.movies === 1 ? '' : 's'} ${media.movies ? '✓ videos reach the app' : '— Steam returned no video for this probe'}</div>`
+    : '';
   const summary = anyOk
     ? `<div class="text-nexus-green font-semibold mt-1">✓ At least one proxy works — screenshots & sync can reach Steam.</div>`
     : `<div class="text-amber-400 font-semibold mt-1">⚠ No proxy could reach Steam. If the Netlify-function row is 404, you're on a site without the serverless proxy (use the GitHub-connected deploy), or the last deploy failed.</div>`;
-  out.innerHTML = `<div class="rounded-lg border border-nexus-border bg-nexus-bg p-2 mt-1">${rowsHTML}${summary}</div>`;
+  out.innerHTML = `<div class="rounded-lg border border-nexus-border bg-nexus-bg p-2 mt-1">${rowsHTML}${mediaLine}${summary}</div>`;
 }
 
 // Keyless public-profile summary XML -> { steamID64, privacyState }.
@@ -3023,6 +3041,7 @@ async function boot(isRefresh = false) {
 }
 
 function init() {
+  const stamp = $('#buildStamp'); if (stamp) stamp.textContent = APP_BUILD;
   renderSystemFilters();
   wireEvents();
 
