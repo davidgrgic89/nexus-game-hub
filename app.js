@@ -1745,12 +1745,12 @@ function renderDetail(deal) {
         ${keyHint}
       </div>
 
+      <div id="detailTrailer" class="mt-5 hidden"></div>
+
       <div class="mt-5">
         <h3 class="text-sm font-bold text-slate-300 mb-2">Screenshots</h3>
         <div id="detailShots" class="flex gap-3 overflow-x-auto no-scrollbar pb-2">${shotsHTML}</div>
       </div>
-
-      <div id="detailTrailer" class="mt-5 hidden"></div>
 
       <div class="mt-6">
         <h3 class="text-base font-extrabold text-slate-200 mb-1 flex items-center gap-2">🛒 Price Comparison · All Storefronts</h3>
@@ -2040,19 +2040,42 @@ function applyMeta(deal, meta) {
     if (el) {
       const lead = movies[0];
       const rest = movies.slice(1);
-      const vid = (m, cls) =>
-        `<video controls playsinline preload="none" ${m.poster ? `poster="${escapeHtml(m.poster)}"` : ''} class="${cls}">
-           <source src="${escapeHtml(m.src)}" type="${escapeHtml(m.type || 'video/mp4')}">
-         </video>`;
       el.classList.remove('hidden');
       el.innerHTML = `
         <h3 class="text-sm font-bold text-slate-300 mb-2">🎬 Trailer &amp; Gameplay</h3>
-        ${vid(lead, 'w-full max-w-2xl rounded-xl border border-nexus-border bg-black')}
-        ${rest.length ? `<div class="flex gap-3 overflow-x-auto no-scrollbar pb-2 mt-3">
-          ${rest.map(m => vid(m, 'h-40 rounded-lg border border-nexus-border bg-black shrink-0')).join('')}
+        ${videoBlock(lead, true)}
+        ${rest.length ? `<div class="flex gap-4 overflow-x-auto no-scrollbar pb-2 mt-4">
+          ${rest.map(m => videoBlock(m, false)).join('')}
         </div>` : ''}`;
     }
   }
+}
+
+// One trailer/gameplay clip: a click-to-play video with a big play overlay (so it
+// reads unmistakably as a video, not a screenshot) and the clip's Steam title as
+// a caption. `lead` renders full-width; the rest render as compact strip cards.
+function videoBlock(m, lead) {
+  const frame = lead
+    ? 'w-full max-w-2xl aspect-video'
+    : 'w-72 aspect-video shrink-0';
+  const label = escapeHtml(m.name || (lead ? 'Trailer' : 'Gameplay'));
+  return `
+    <figure class="m-0 ${lead ? '' : 'shrink-0'}">
+      <div class="video-wrap relative ${frame} rounded-xl overflow-hidden border border-nexus-border bg-black">
+        <video playsinline controls preload="none" ${m.poster ? `poster="${escapeHtml(m.poster)}"` : ''}
+          class="w-full h-full object-cover"
+          onplay="this.closest('.video-wrap').querySelector('.play-ov')?.remove()">
+          <source src="${escapeHtml(m.src)}" type="${escapeHtml(m.type || 'video/mp4')}">
+        </video>
+        <button type="button" class="play-ov absolute inset-0 flex items-center justify-center bg-black/25 hover:bg-black/10 transition group"
+          aria-label="Play ${label}"
+          onclick="const v=this.closest('.video-wrap').querySelector('video'); v.play(); this.remove();">
+          <span class="grid place-items-center rounded-full bg-black/60 backdrop-blur text-white shadow-glow-soft group-hover:scale-110 transition
+                       ${lead ? 'w-16 h-16 text-2xl' : 'w-11 h-11 text-lg'}">▶</span>
+        </button>
+      </div>
+      <figcaption class="text-xs text-slate-400 mt-1.5 ${lead ? '' : 'w-72 truncate'}">${label}</figcaption>
+    </figure>`;
 }
 
 /* ---- Historical lowest-price lookup (CheapShark game lookup) ---- */
