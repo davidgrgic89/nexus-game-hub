@@ -57,7 +57,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · trailer-mp4-fix';
+const APP_BUILD = 'v2026.07.13 · rawg-console-media';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -73,10 +73,12 @@ const CHEAPSHARK_STORES = {
   34: 'Noctre', 35: 'DreamGame',
 };
 
-// Optional: paste a free key from https://rawg.io/apidocs to enable live
-// metadata enrichment (descriptions, screenshots, trailers). Left blank the app
-// falls back cleanly to curated art + a generated description — nothing breaks.
-const RAWG_API_KEY = '';
+// RAWG enrichment (screenshots + a trailer for console exclusives NOT on Steam,
+// e.g. Nintendo / PlayStation first-party) is keyed server-side: the /api/rawg
+// Pages Function injects the RAWG_API_KEY secret, so no key ships to the browser
+// or sits in the public repo. If the secret is not set, /api/rawg returns 501 and
+// the app quietly falls back to cover-only. Get a free key at rawg.io/apidocs and
+// add it in the Pages project (Settings, Variables and Secrets, RAWG_API_KEY).
 
 // The Steam importer is fully KEYLESS — it reads the public community profile
 // (resolved through the CORS-proxy array below), so no Web API key is required.
@@ -1932,8 +1934,10 @@ function mergeMeta(a, b) {
 }
 
 async function fetchRawgMeta(title) {
-  const key = RAWG_API_KEY;
-  const s = await fetch(`https://api.rawg.io/api/games?key=${key}&search=${encodeURIComponent(title)}&page_size=1`);
+  // Route RAWG through our Pages Function so the key stays server-side. A 501
+  // (secret not set) makes the first fetch !ok -> we throw -> caller falls back.
+  const rawg = (path) => '/api/rawg?url=' + encodeURIComponent('https://api.rawg.io/api/' + path);
+  const s = await fetch(rawg(`games?search=${encodeURIComponent(title)}&page_size=1`));
   if (!s.ok) throw new Error('RAWG search ' + s.status);
   const g = (await s.json()).results?.[0];
   if (!g) return null;
@@ -1943,7 +1947,7 @@ async function fetchRawgMeta(title) {
     screenshots: (g.short_screenshots || []).map(x => x.image).filter(Boolean),
   };
   try {
-    const d = await fetch(`https://api.rawg.io/api/games/${g.id}?key=${key}`);
+    const d = await fetch(rawg(`games/${g.id}`));
     if (d.ok) {
       const dj = await d.json();
       meta.description = dj.description_raw || '';
@@ -1953,7 +1957,7 @@ async function fetchRawgMeta(title) {
     }
   } catch { /* details optional */ }
   try {
-    const m = await fetch(`https://api.rawg.io/api/games/${g.id}/movies?key=${key}`);
+    const m = await fetch(rawg(`games/${g.id}/movies`));
     if (m.ok) {
       const mv = (await m.json()).results?.[0];
       if (mv) { meta.trailer = mv.data?.max || mv.data?.['480'] || null; meta.trailerPoster = mv.preview || null; }
@@ -1978,8 +1982,12 @@ async function enrichDetail(deal) {
     if (appid) meta = await fetchSteamMeta(appid);
   } catch (e) { console.warn('[Steam meta] enrichment failed:', e.message); }
 
-  // Optional augment: RAWG fills gaps (long description, extra shots) when keyed.
-  if (RAWG_API_KEY) {
+  // Fill gaps from RAWG (key injected server-side by /api/rawg): the media source
+  // for console exclusives that aren't on Steam (screenshots + a trailer). Only
+  // call it when Steam left the view short, to keep RAWG usage light. If the
+  // RAWG_API_KEY secret isn't set, /api/rawg returns 501 and this no-ops cleanly.
+  const needsMedia = !meta || !(meta.screenshots && meta.screenshots.length) || !(meta.movies && meta.movies.length);
+  if (needsMedia) {
     try {
       const r = await fetchRawgMeta(deal.title);
       if (r) meta = mergeMeta(meta, r);
