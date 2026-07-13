@@ -2383,7 +2383,11 @@ function parseSteamId(input) {
 // allorigins.win -> api.allorigins.win/get, corsproxy.io -> /?url=, freeboard.io ->
 // thingproxy.freeboard.io/fetch.)
 const CORS_PROXIES = [
-  (u) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`, // raw body, reliable for JSON
+  // Our OWN Netlify serverless proxy — same-origin, reliable, no third party.
+  // On the deployed site this resolves and always works; on local/other hosts it
+  // 404s and we fall through to the public proxies below.
+  (u) => `/.netlify/functions/steam?url=${encodeURIComponent(u)}`,      // raw body
+  (u) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`, // raw body
   (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,          // raw body
   (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, // wraps body in .contents
   (u) => `https://thingproxy.freeboard.io/fetch/${u}`,                  // raw body

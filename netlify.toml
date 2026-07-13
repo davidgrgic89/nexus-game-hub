@@ -1,0 +1,10 @@
+# Netlify configuration for Nexus Game Hub (static PWA + serverless Steam proxy)
+[build]
+  publish = "."          # static site lives at the repo root (index.html)
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[build.environment]
+  NODE_VERSION = "20"    # ensure global fetch() is available in functions
