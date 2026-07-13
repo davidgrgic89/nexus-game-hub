@@ -1,0 +1,12 @@
+{
+  "name": "nexus-game-hub",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Aggregated game deals, free-to-keep games and price drops PWA.",
+  "scripts": {
+    "build:css": "tailwindcss -i ./src/input.css -o ./styles.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}

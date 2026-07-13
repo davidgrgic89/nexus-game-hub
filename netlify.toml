@@ -1,6 +1,9 @@
 # Netlify configuration for Nexus Game Hub (static PWA + serverless Steam proxy)
 [build]
-  publish = "."          # static site lives at the repo root (index.html)
+  publish = "."                     # static site lives at the repo root (index.html)
+  command = "npm run build:css"     # recompile Tailwind so styles.css always matches
+                                    # the current classes (the committed styles.css is a
+                                    # fallback for local/file:// use and if a build is skipped)
 
 [functions]
   directory = "netlify/functions"

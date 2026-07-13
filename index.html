@@ -10,36 +10,10 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Ctext%20y='26'%20font-size='26'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20180%20180'%3E%3Crect%20width='180'%20height='180'%20rx='38'%20fill='%230a0a0f'/%3E%3Ctext%20x='90'%20y='122'%20font-size='104'%20text-anchor='middle'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E" />
 
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    // Tailwind runtime config — extends the palette for the neon game-store theme.
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            nexus: {
-              bg:      '#0a0a0f',
-              surface: '#12121c',
-              card:    '#161623',
-              border:  '#25253a',
-              cyan:    '#22d3ee',
-              violet:  '#8b5cf6',
-              green:   '#22c55e',
-              red:     '#ef4444',
-            }
-          },
-          fontFamily: {
-            display: ['"Segoe UI"', 'system-ui', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
-          },
-          boxShadow: {
-            glow:       '0 0 18px -2px rgba(34,211,238,0.55)',
-            'glow-soft':'0 0 24px -6px rgba(139,92,246,0.5)',
-          }
-        }
-      }
-    };
-  </script>
+  <!-- Precompiled Tailwind (see tailwind.config.js + src/input.css; rebuild with
+       `npm run build:css`). Replaces the cdn.tailwindcss.com runtime so the app
+       is self-contained, faster, and never renders unstyled if a CDN is down. -->
+  <link rel="stylesheet" href="styles.css" />
 
   <style>
     :root { color-scheme: dark; }

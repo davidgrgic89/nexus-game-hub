@@ -2915,14 +2915,13 @@ function init() {
   updateLoadMoreUI('idle');
   boot();                    // hydrate with live paginated data
 
+  // Real app-shell service worker (sw.js) — offline support + instant repeat
+  // loads. Registered from a real path so its scope covers the whole app; the
+  // catch keeps non-secure contexts (e.g. file://) from throwing.
   if ('serviceWorker' in navigator) {
-    const swCode = `self.addEventListener('install',e=>self.skipWaiting());
-      self.addEventListener('activate',e=>self.clients.claim());
-      self.addEventListener('fetch',()=>{});`;
-    try {
-      const blob = new Blob([swCode], { type: 'text/javascript' });
-      navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(() => {});
-    } catch { /* non-fatal */ }
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* non-fatal */ });
+    });
   }
 }
 
