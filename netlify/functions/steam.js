@@ -29,9 +29,16 @@ exports.handler = async (event) => {
 
   try {
     const upstream = await fetch(target, {
+      redirect: 'follow',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (NexusGameHub; +https://nexus-game-hub.netlify.app)',
+        // Present as a real browser — Steam serves cleaner responses and is less
+        // likely to gate a datacenter request behind an interstitial.
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml,application/json;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
+        // Skip the store's age gate + force a stable region/language so appdetails
+        // returns data for mature titles instead of {"success":false}.
+        'Cookie': 'birthtime=568022401; wants_mature_content=1; Steam_Language=english',
       },
     });
     const body = await upstream.text();
@@ -40,12 +47,12 @@ exports.handler = async (event) => {
       headers: {
         ...CORS,
         'Content-Type': upstream.headers.get('content-type') || 'application/json',
-        // Cache successful lookups for an hour to stay well within limits.
-        'Cache-Control': 'public, max-age=3600',
+        // Cache successful lookups for an hour to stay well within Steam's limits.
+        'Cache-Control': upstream.ok ? 'public, max-age=3600' : 'no-store',
       },
       body,
     };
   } catch (err) {
-    return { statusCode: 502, headers: CORS, body: 'Upstream fetch failed: ' + err.message };
+    return { statusCode: 502, headers: CORS, body: 'Upstream fetch failed: ' + (err && err.message || err) };
   }
 };

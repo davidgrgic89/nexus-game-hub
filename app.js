@@ -1872,7 +1872,10 @@ async function resolveSteamAppId(deal) {
 // Keyless Steam appdetails → normalized meta (screenshots + movies + text).
 async function fetchSteamMeta(appid) {
   const url = `https://store.steampowered.com/api/appdetails?appids=${appid}&l=english`;
-  const body = await fetchViaProxyText(url);
+  // Only accept a proxy response that is genuine appdetails JSON for this appid —
+  // otherwise fall through to the next proxy instead of failing on a junk page.
+  const ok = (b) => { try { const d = JSON.parse(b); return !!(d && d[appid] && d[appid].success); } catch { return false; } };
+  const body = await fetchViaProxyText(url, ok);
   const json = JSON.parse(body);
   const entry = json[appid] || json[String(appid)];
   if (!entry || !entry.success || !entry.data) return null;
@@ -2205,6 +2208,7 @@ function wireEvents() {
     if (e.target.closest('#copySyncBtn')) { handleCopySync(); return; }
     if (e.target.closest('#compareCoopBtn')) { handleCompareCoop(); return; }
     if (e.target.closest('#steamImportBtn') || e.target.closest('#steamSyncRetry')) { handleSteamImport(); return; }
+    if (e.target.closest('#steamDiagBtn')) { testSteamConnection(); return; }
 
     // Detail modal close (back button or backdrop click).
     if (e.target.closest('[data-detail-close]') || e.target.closest('[data-detail-backdrop]')) { requestCloseOverlays(); return; }
@@ -2454,7 +2458,7 @@ const PROXY_TIMEOUT_MS = 8000;
 // Fetch a public Steam page/XML through the proxy array, returning the raw body
 // text. AllOrigins nests the body as a JSON string under `.contents`; corsproxy.io
 // and thingproxy return it raw. Any 403/timeout rolls to the next proxy.
-async function fetchViaProxyText(targetUrl) {
+async function fetchViaProxyText(targetUrl, validate) {
   let lastErr;
   for (let i = 0; i < CORS_PROXIES.length; i++) {
     const controller = new AbortController();
@@ -2466,6 +2470,9 @@ async function fetchViaProxyText(targetUrl) {
       let body = raw;
       try { const j = JSON.parse(raw); if (j && typeof j.contents === 'string') body = j.contents; } catch { /* already raw */ }
       if (!body) throw new Error('empty payload');
+      // A proxy can answer 200 with a junk/error page. If the caller gave a
+      // validator and the body doesn't pass, treat it as a miss and roll on.
+      if (validate && !validate(body)) throw new Error('unusable payload');
       return body;
     } catch (e) {
       lastErr = e;
@@ -2475,6 +2482,55 @@ async function fetchViaProxyText(targetUrl) {
     }
   }
   throw new Error('All CORS proxies are unreachable right now (last: ' + (lastErr?.message || 'unknown') + '). Please try again shortly.');
+}
+
+// Human labels for each proxy row in the connection diagnostic.
+function proxyLabel(i) {
+  return ['Netlify function (this site)', 'codetabs.com', 'corsproxy.io', 'allorigins.win', 'thingproxy'][i] || ('proxy ' + (i + 1));
+}
+
+// Probe every proxy against a known-good public appdetails call (Team Fortress 2,
+// appid 440) and report which ones actually return valid Steam JSON. Lets a user
+// see on the LIVE site exactly where the pipeline breaks (e.g. the serverless
+// function 404ing = wrong site / failed deploy) instead of a generic failure.
+async function testSteamConnection() {
+  const out = $('#steamDiagResult');
+  if (out) out.innerHTML = '<span class="text-nexus-cyan">⏳ Probing each proxy against Steam (appid 440)…</span>';
+  const testUrl = 'https://store.steampowered.com/api/appdetails?appids=440&l=english';
+  const rows = [];
+  let anyOk = false;
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    const t0 = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+    let verdict, ok = false, detail = '';
+    try {
+      const res = await fetch(CORS_PROXIES[i](testUrl), { signal: controller.signal });
+      const raw = await res.text();
+      let body = raw;
+      try { const j = JSON.parse(raw); if (j && typeof j.contents === 'string') body = j.contents; } catch { /* raw */ }
+      try { const d = JSON.parse(body); ok = !!(d && d['440'] && d['440'].success); } catch { ok = false; }
+      if (ok) { verdict = 'OK'; anyOk = true; }
+      else if (!res.ok) { verdict = 'HTTP ' + res.status; detail = res.status === 404 ? ' (function not deployed here?)' : ''; }
+      else { verdict = 'bad payload'; detail = ' (reachable, but no valid Steam JSON)'; }
+    } catch (e) {
+      verdict = e.name === 'AbortError' ? 'timeout' : 'blocked/error';
+    } finally {
+      clearTimeout(timer);
+    }
+    rows.push({ label: proxyLabel(i), verdict, ok, ms: Date.now() - t0, detail });
+  }
+  if (!out) return;
+  const rowsHTML = rows.map(r =>
+    `<div class="flex items-center gap-2 py-0.5">
+       <span>${r.ok ? '✅' : '❌'}</span>
+       <span class="text-slate-300">${escapeHtml(r.label)}</span>
+       <span class="ml-auto ${r.ok ? 'text-nexus-green' : 'text-slate-500'}">${escapeHtml(r.verdict)}${escapeHtml(r.detail)} · ${r.ms}ms</span>
+     </div>`).join('');
+  const summary = anyOk
+    ? `<div class="text-nexus-green font-semibold mt-1">✓ At least one proxy works — screenshots & sync can reach Steam.</div>`
+    : `<div class="text-amber-400 font-semibold mt-1">⚠ No proxy could reach Steam. If the Netlify-function row is 404, you're on a site without the serverless proxy (use the GitHub-connected deploy), or the last deploy failed.</div>`;
+  out.innerHTML = `<div class="rounded-lg border border-nexus-border bg-nexus-bg p-2 mt-1">${rowsHTML}${summary}</div>`;
 }
 
 // Keyless public-profile summary XML -> { steamID64, privacyState }.
@@ -2508,7 +2564,8 @@ async function importSteamLibrary(input) {
 
   // 1) Keyless profile summary: resolves a vanity name -> SteamID64 and reveals
   //    the privacy state, all without a developer token.
-  const summaryXml = await fetchViaProxyText(`https://steamcommunity.com/${path}/?xml=1`);
+  const summaryXml = await fetchViaProxyText(`https://steamcommunity.com/${path}/?xml=1`,
+    (b) => /<steamID64>\d+<\/steamID64>/.test(b) || /<privacyState>/.test(b));
   const profile = parseSteamProfileXml(summaryXml);
   if (!profile.steamID64) {
     throw new Error(parsed.type === 'vanity'
@@ -2532,10 +2589,13 @@ async function importSteamLibrary(input) {
     { url: `https://steamcommunity.com/profiles/${id64}/games/?tab=all&xml=1`,  parse: parseGamesXml },
     { url: `https://steamcommunity.com/profiles/${id64}/games?tab=all&xml=1`,   parse: parseGamesXml },
   ];
+  // Accept only bodies that actually contain a games list (embedded rgGames or
+  // <game> XML), so a proxy's 200 error page doesn't masquerade as "no games".
+  const looksLikeGames = (b) => /rgGames\s*=/.test(b) || /<game>/.test(b);
   let games = null;
   for (const a of attempts) {
     try {
-      const parsed = a.parse(await fetchViaProxyText(a.url));
+      const parsed = a.parse(await fetchViaProxyText(a.url, looksLikeGames));
       if (parsed && parsed.length) { games = parsed; break; }
     } catch { /* try the next source */ }
   }
@@ -2683,6 +2743,10 @@ function renderLibraryExtras() {
         class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
       <button id="steamImportBtn" class="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg font-bold text-sm hover:opacity-90 transition">🔄 Sync Library</button>
       <div id="steamImportStatus" class="text-xs text-slate-400 leading-relaxed"></div>
+      <div class="flex items-center justify-between">
+        <button id="steamDiagBtn" class="text-[11px] text-slate-500 hover:text-nexus-cyan underline decoration-dotted transition">🔧 Test Steam connection</button>
+      </div>
+      <div id="steamDiagResult" class="text-[11px] leading-relaxed"></div>
 
       <!-- Automated privacy-protection injector -->
       <div id="steam-privacy-helper" class="hidden rounded-xl border border-amber-500/50 p-3" style="background:#241d08">
