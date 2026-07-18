@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · dlc-hints';
+const APP_BUILD = 'v2026.07.13 · dlc-fast-scan';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -3005,16 +3005,24 @@ function renderCoopGroups() {
  * are cached so re-scans are cheap and stay well within Steam's rate limits.
  * ----------------------------------------------------------------------- */
 const DLC_SCAN_MAX_GAMES = 60;   // cap games probed per scan
-const DLC_SCAN_MAX_DLC   = 120;  // cap total DLC detail lookups per scan
+const DLC_SCAN_MAX_DLC   = 150;  // cap total DLC detail lookups per scan
+const DLC_BATCH = 25;            // appids per appdetails request
 
-// Fetch appdetails for one appid through the proxy; return the `data` object.
-async function steamAppDetails(appid, filters) {
+const chunkArr = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+
+// Batch appdetails: Steam returns every requested appid keyed in one response
+// when `filters` is set. Turns hundreds of per-game/per-DLC calls into a handful.
+// Returns { appid: data|null }.
+async function steamAppDetailsBatch(appids, filters) {
+  if (!appids.length) return {};
   const f = filters ? `&filters=${filters}` : '';
-  const url = `https://store.steampowered.com/api/appdetails?appids=${appid}&l=english&cc=us${f}`;
-  const ok = (b) => { try { const d = JSON.parse(b); return !!(d && (d[appid] || d[String(appid)])); } catch { return false; } };
+  const url = `https://store.steampowered.com/api/appdetails?appids=${appids.join(',')}&l=english&cc=us${f}`;
+  const ok = (b) => { try { const d = JSON.parse(b); return d && typeof d === 'object'; } catch { return false; } };
   const body = await fetchViaProxyText(url, ok);
-  const entry = JSON.parse(body)[appid] || JSON.parse(body)[String(appid)];
-  return (entry && entry.success && entry.data) ? entry.data : null;
+  const json = JSON.parse(body);
+  const out = {};
+  for (const id of appids) { const e = json[id] || json[String(id)]; out[id] = (e && e.success && e.data) ? e.data : null; }
+  return out;
 }
 
 // Resolve a Steam appID for an owned library game (Steam import carries one).
@@ -3026,50 +3034,72 @@ async function resolveOwnedAppId(game) {
   catch { return null; }
 }
 
-// Walk the library, collect available DLC grouped by base game.
+// Walk the library, collect available DLC grouped by base game — batched so even
+// a large Steam library is a few requests, not hundreds (never hangs / rate-limits).
 async function scanLibraryDLC(onProgress) {
   const cache = State.dlcCache;
   cache.byGame = cache.byGame || {};   // gameId -> [{appid,name}] for collection hints
   const games = State.library.slice(0, DLC_SCAN_MAX_GAMES);
-  const results = [];
-  let scanned = 0, skipped = 0, totalDlc = 0;
+
+  // 1) Resolve appids (instant for Steam-imported games) and map appid -> game.
+  const gameByAppid = {};
+  let scanned = 0, skipped = 0;
   for (const game of games) {
     scanned++;
-    onProgress && onProgress(scanned, games.length, game.title);
     let appid = null;
     try { appid = await resolveOwnedAppId(game); } catch { /* unresolved */ }
     if (!appid) { skipped++; continue; }
+    gameByAppid[appid] = game;
+  }
 
-    let dlcIds = cache.bases[appid];
-    if (!dlcIds) {
-      const data = await steamAppDetails(appid).catch(() => null);
-      dlcIds = (data && Array.isArray(data.dlc)) ? data.dlc : [];
-      cache.bases[appid] = dlcIds;
+  // 2) Batch-fetch base games that aren't cached, to read each game's `dlc` list.
+  const needBase = Object.keys(gameByAppid).filter(id => cache.bases[id] === undefined);
+  onProgress && onProgress(`Reading DLC lists for ${needBase.length || 'your'} games…`);
+  for (const chunk of chunkArr(needBase, DLC_BATCH)) {
+    try {
+      const map = await steamAppDetailsBatch(chunk, 'basic');
+      for (const id of chunk) { const d = map[id]; cache.bases[id] = (d && Array.isArray(d.dlc)) ? d.dlc : []; }
+    } catch { for (const id of chunk) if (cache.bases[id] === undefined) cache.bases[id] = []; }
+  }
+
+  // 3) Gather all DLC appids (deduped, capped), then batch-fetch the ones we lack.
+  const allDlc = [];
+  for (const id of Object.keys(gameByAppid)) {
+    for (const did of (cache.bases[id] || [])) {
+      if (allDlc.length >= DLC_SCAN_MAX_DLC) break;
+      if (!allDlc.includes(did)) allDlc.push(did);
     }
-    if (!dlcIds.length) { cache.byGame[game.id] = []; continue; }
-
-    const dlcs = [];
-    for (const did of dlcIds) {
-      if (totalDlc >= DLC_SCAN_MAX_DLC) break;
-      let det = cache.details[did];
-      if (det === undefined) {
-        const data = await steamAppDetails(did, 'basic,price_overview').catch(() => null);
+  }
+  const needDetail = allDlc.filter(did => cache.details[did] === undefined);
+  onProgress && onProgress(`Looking up ${needDetail.length} DLC…`);
+  for (const chunk of chunkArr(needDetail, DLC_BATCH)) {
+    try {
+      const map = await steamAppDetailsBatch(chunk, 'basic,price_overview');
+      for (const id of chunk) {
+        const data = map[id];
         if (data && data.name) {
           const po = data.price_overview;
-          det = {
-            name: data.name,
-            isFree: !!data.is_free,
+          cache.details[id] = {
+            name: data.name, isFree: !!data.is_free,
             discount: po ? po.discount_percent : 0,
             priceFinal: po ? po.final / 100 : (data.is_free ? 0 : null),
             priceInitial: po ? po.initial / 100 : null,
-            url: `https://store.steampowered.com/app/${did}/`,
+            url: `https://store.steampowered.com/app/${id}/`,
           };
-        } else det = null;
-        cache.details[did] = det;
+        } else cache.details[id] = null;
       }
-      if (!det || !det.name) continue;
-      totalDlc++;
-      dlcs.push({ appid: did, ...det });
+    } catch { for (const id of chunk) if (cache.details[id] === undefined) cache.details[id] = null; }
+  }
+
+  // 4) Build the grouped results + per-game hint lists.
+  const results = [];
+  let totalDlc = 0;
+  for (const id of Object.keys(gameByAppid)) {
+    const game = gameByAppid[id];
+    const dlcs = [];
+    for (const did of (cache.bases[id] || [])) {
+      const det = cache.details[did];
+      if (det && det.name) { dlcs.push({ appid: did, ...det }); totalDlc++; }
     }
     cache.byGame[game.id] = dlcs.map(d => ({ appid: d.appid, name: d.name }));
     if (dlcs.length) results.push({ baseTitle: game.title, baseGameId: game.id, dlcs });
@@ -3090,9 +3120,9 @@ async function runScanDlc() {
   if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Scanning…'; }
   el.innerHTML = dlcCard(`<span class="text-nexus-cyan" id="dlcProgress">⏳ Scanning your library for DLC…</span>`);
   try {
-    const data = await scanLibraryDLC((i, total, title) => {
+    const data = await scanLibraryDLC((msg) => {
       const p = $('#dlcProgress');
-      if (p) p.textContent = `⏳ Scanning ${i}/${total}: ${title}`;
+      if (p) p.textContent = `⏳ ${msg}`;
     });
     State.dlcScan = data;
     renderDlcResults(data);
