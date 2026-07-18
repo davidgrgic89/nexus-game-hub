@@ -59,7 +59,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · saved-crews';
+const APP_BUILD = 'v2026.07.13 · library-page';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -1322,10 +1322,12 @@ function renderFavorites() {
 /* ---- Library panel ---- */
 function renderLibrary() {
   const list = $('#libraryList');
+  const countEl = $('#libraryCount');
+  if (countEl) countEl.textContent = `${State.library.length} game${State.library.length === 1 ? '' : 's'}`;
   if (!State.library.length) {
-    list.innerHTML = `<div class="text-center py-16 text-slate-500">
+    list.innerHTML = `<div class="col-span-full text-center py-16 text-slate-500">
       <div class="text-4xl mb-2">📚</div><p class="text-sm">Your library is empty.</p>
-      <p class="text-xs mt-1">Mark deals as owned, or add games above.</p></div>`;
+      <p class="text-xs mt-1">Mark deals as owned, or add games from the panel on the right.</p></div>`;
     return;
   }
 
@@ -3083,7 +3085,11 @@ function anyOverlayOpen() {
 }
 function updateBackToCatalog() {
   const btn = $('#backToCatalog');
-  if (btn) btn.classList.toggle('hidden-init', !anyOverlayOpen());
+  if (!btn) return;
+  // The Library is now a full page with its own in-header "Deals" button, so the
+  // floating catalog pill would be redundant there — hide it when Library is open.
+  const libOpen = !$('[data-overlay="library"]').classList.contains('hidden-init');
+  btn.classList.toggle('hidden-init', !anyOverlayOpen() || libOpen);
 }
 
 // Push a single pseudo history entry when the first overlay opens, so a mobile
