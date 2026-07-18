@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · dlc-autoscroll';
+const APP_BUILD = 'v2026.07.13 · console-dlc';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -3004,11 +3004,59 @@ function renderCoopGroups() {
  * console games have no keyless DLC source and are skipped. Results and lookups
  * are cached so re-scans are cheap and stay well within Steam's rate limits.
  * ----------------------------------------------------------------------- */
-const DLC_SCAN_MAX_GAMES = 60;   // cap games probed per scan
-const DLC_SCAN_MAX_DLC   = 150;  // cap total DLC detail lookups per scan
-const DLC_BATCH = 25;            // appids per appdetails request
+const DLC_SCAN_MAX_GAMES   = 60;   // cap games probed per scan
+const DLC_SCAN_MAX_DLC     = 150;  // cap total DLC detail lookups per scan
+const DLC_SCAN_MAX_CONSOLE = 30;   // cap console (RAWG) games per scan
+const DLC_BATCH = 25;              // appids per appdetails request
+const CONSOLE_PLATFORMS = ['PlayStation', 'Xbox', 'Switch', 'Switch2'];
 
 const chunkArr = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+
+// Concurrency-limited async map (keeps the RAWG console pass snappy without
+// hammering the API).
+async function mapLimit(items, limit, fn, onEach) {
+  let i = 0;
+  const worker = async () => { while (i < items.length) { const idx = i++; await fn(items[idx], idx); onEach && onEach(); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+// Console platform -> store label + a DLC search link (reuses storeLink).
+function consoleStore(platform, name) {
+  if (platform === 'PlayStation') return { label: 'PlayStation Store', url: storeLink('PlayStation', name) };
+  if (platform === 'Xbox') return { label: 'Xbox Store', url: storeLink('Xbox', name) };
+  if (platform === 'Switch' || platform === 'Switch2') return { label: 'Nintendo eShop', url: storeLink('', name, 'nintendo') };
+  return { label: 'the store', url: storeLink('', name) };
+}
+
+// Console DLC names via RAWG (no console price source exists). Cached per title.
+// Returns [{name}], [] for none, or null when the RAWG key isn't configured.
+async function rawgDlcForTitle(title) {
+  const cache = State.dlcCache;
+  cache.rawg = cache.rawg || {};
+  const key = normTitle(title);
+  if (key in cache.rawg) return cache.rawg[key];
+  const rawg = (path) => '/api/rawg?url=' + encodeURIComponent('https://api.rawg.io/api/' + path);
+  let s;
+  try { s = await fetch(rawg(`games?search=${encodeURIComponent(cleanTitleForSearch(title))}&page_size=1`)); }
+  catch { return []; }
+  if (s.status === 501) return null;                       // key missing -> signal caller
+  if (!s.ok) { cache.rawg[key] = []; return []; }
+  const g = (await s.json()).results?.[0];
+  if (!g) { cache.rawg[key] = []; return []; }
+  let items = [];
+  try { const a = await fetch(rawg(`games/${g.id}/additions?page_size=40`)); if (a.ok) items = (await a.json()).results || []; }
+  catch { /* no additions */ }
+  // Keep real add-on DLC; drop obvious base-game editions/bundles. De-dupe by name.
+  const seen = new Set(); const out = [];
+  for (const x of items) {
+    const name = (x.name || '').trim();
+    if (!name || /\b(edition|bundle|complete|collection|goty|game of the year)\b/i.test(name)) continue;
+    const n = normTitle(name);
+    if (!seen.has(n)) { seen.add(n); out.push({ name }); }
+  }
+  cache.rawg[key] = out;
+  return out;
+}
 
 // Batch appdetails: Steam returns every requested appid keyed in one response
 // when `filters` is set. Turns hundreds of per-game/per-DLC calls into a handful.
@@ -3041,15 +3089,18 @@ async function scanLibraryDLC(onProgress) {
   cache.byGame = cache.byGame || {};   // gameId -> [{appid,name}] for collection hints
   const games = State.library.slice(0, DLC_SCAN_MAX_GAMES);
 
-  // 1) Resolve appids (instant for Steam-imported games) and map appid -> game.
+  // 1) Split games: console-platform entries go to RAWG (names only); the rest
+  //    resolve a Steam appID for full DLC + prices.
   const gameByAppid = {};
+  const consoleGames = [];
   let scanned = 0, skipped = 0;
   for (const game of games) {
     scanned++;
+    if (CONSOLE_PLATFORMS.includes(game.platform) && !game.appid) { consoleGames.push(game); continue; }
     let appid = null;
     try { appid = await resolveOwnedAppId(game); } catch { /* unresolved */ }
-    if (!appid) { skipped++; continue; }
-    gameByAppid[appid] = game;
+    if (appid) gameByAppid[appid] = game;
+    else skipped++;
   }
 
   // 2) Batch-fetch base games that aren't cached, to read each game's `dlc` list.
@@ -3104,8 +3155,28 @@ async function scanLibraryDLC(onProgress) {
     cache.byGame[game.id] = dlcs.map(d => ({ appid: d.appid, name: d.name }));
     if (dlcs.length) results.push({ baseTitle: game.title, baseGameId: game.id, dlcs });
   }
+
+  // 5) Console games via RAWG (names + store links; no prices). Concurrency-limited.
+  let rawgMissing = false;
+  const consoleTargets = consoleGames.slice(0, DLC_SCAN_MAX_CONSOLE);
+  if (consoleTargets.length) {
+    let done = 0;
+    await mapLimit(consoleTargets, 4, async (game) => {
+      if (rawgMissing) return;
+      let names = [];
+      try { names = await rawgDlcForTitle(game.title); } catch { names = []; }
+      if (names === null) { rawgMissing = true; return; }   // RAWG key not set
+      const dlcs = names.map(x => {
+        const st = consoleStore(game.platform, x.name);
+        return { name: x.name, console: game.platform, url: st.url, storeLabel: st.label };
+      });
+      cache.byGame[game.id] = dlcs.map(d => ({ name: d.name, console: true }));
+      if (dlcs.length) { results.push({ baseTitle: game.title, baseGameId: game.id, dlcs, console: true }); totalDlc += dlcs.length; }
+    }, () => { done++; onProgress && onProgress(`Checking console DLC ${done}/${consoleTargets.length}…`); });
+  }
+
   State.persist(); // keep the freshly filled lookup cache + per-game hints
-  return { results, scanned, skipped, totalDlc };
+  return { results, scanned, skipped, totalDlc, rawgMissing, consoleScanned: consoleTargets.length };
 }
 
 async function runScanDlc() {
@@ -3156,6 +3227,10 @@ function showDlcForGame(gameId) {
   const list = (State.dlcCache.byGame && State.dlcCache.byGame[gameId]) || [];
   if (!g || !list.length) { runScanDlc(); return; }
   const dlcs = list.map(x => {
+    if (x.console || !x.appid) {
+      const st = consoleStore(g.platform, x.name);
+      return { name: x.name, console: g.platform, url: st.url, storeLabel: st.label };
+    }
     const det = State.dlcCache.details[x.appid] || {};
     return {
       appid: x.appid, name: det.name || x.name,
@@ -3178,14 +3253,25 @@ function renderDlcResults(data) {
   if (!el) return;
   el.classList.remove('hidden');
   if (!data.results.length) {
-    el.innerHTML = dlcCard(`No DLC found for your Steam titles (scanned ${data.scanned}${data.skipped ? `, ${data.skipped} not on Steam` : ''}). Console games can't be scanned for DLC.`);
+    const why = data.rawgMissing
+      ? ` Console DLC needs the RAWG key set on Cloudflare (Settings, Variables and Secrets, RAWG_API_KEY).`
+      : '';
+    el.innerHTML = dlcCard(`No DLC found (scanned ${data.scanned} games).${why}`);
     return;
   }
+  const hasConsole = data.results.some(g => g.console);
+  const consoleNote = hasConsole
+    ? `<p class="text-[11px] text-amber-200/70 bg-amber-500/5 border border-amber-500/30 rounded-lg px-3 py-2 mb-3">
+         ℹ️ Console DLC shows names and a store link only. No free source provides PlayStation/Xbox/Nintendo DLC prices, so open the store to see the price and wishlist there for alerts.</p>`
+    : '';
+  const rawgNote = data.rawgMissing
+    ? `<p class="text-[11px] text-amber-300 mb-3">⚠ Some console games were skipped: set the RAWG_API_KEY secret on Cloudflare to enable console DLC.</p>`
+    : '';
   const groups = data.results.map(g => `
     <div class="mb-4 last:mb-0">
       <h4 class="text-sm font-bold text-slate-200 mb-2 flex items-center gap-2">
-        <span class="w-1.5 h-1.5 rounded-full bg-nexus-violet"></span>${escapeHtml(g.baseTitle)}
-        <span class="text-xs font-normal text-slate-500">· ${g.dlcs.length} DLC</span>
+        <span class="w-1.5 h-1.5 rounded-full ${g.console ? 'bg-amber-400' : 'bg-nexus-violet'}"></span>${escapeHtml(g.baseTitle)}
+        <span class="text-xs font-normal text-slate-500">· ${g.dlcs.length} DLC${g.console ? ' · console' : ''}</span>
       </h4>
       <div class="space-y-2">${g.dlcs.map(d => dlcRowHTML(g.baseGameId, d)).join('')}</div>
     </div>`).join('');
@@ -3198,12 +3284,33 @@ function renderDlcResults(data) {
         </h3>
         <button id="dlcClose" class="shrink-0 w-8 h-8 grid place-items-center rounded-lg hover:bg-nexus-bg text-slate-400 hover:text-white text-xl leading-none">×</button>
       </div>
-      ${groups}
+      ${rawgNote}${consoleNote}${groups}
     </div>`;
 }
 
 function dlcRowHTML(baseGameId, d) {
   const owned = isDlcOwned(baseGameId, d.name);
+  const ownBtn = `<button data-dlc-own="${baseGameId}::${encodeURIComponent(d.name)}" title="${owned ? 'Owned' : 'Mark as owned'}"
+       class="px-2 h-7 rounded-lg border text-[11px] font-bold transition ${owned ? 'bg-nexus-cyan/15 border-nexus-cyan text-nexus-cyan' : 'border-nexus-border text-slate-400 hover:text-white hover:border-nexus-cyan'}">${owned ? '✓ Own' : '+ Own'}</button>`;
+
+  // Console DLC (from RAWG): name + store link only, no price/sale data exists.
+  if (d.console) {
+    const price = owned ? '<span class="text-nexus-cyan font-bold">In your library</span>'
+      : `<span class="text-slate-500 italic">Price on ${escapeHtml(d.storeLabel || 'the store')} — open to check</span>`;
+    return `
+    <div class="flex items-center gap-2 p-2 rounded-lg bg-nexus-bg border border-nexus-border">
+      <div class="min-w-0 flex-1">
+        <div class="text-sm text-slate-200 truncate">${escapeHtml(d.name)}</div>
+        <div class="text-xs mt-0.5">${price}</div>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        ${ownBtn}
+        <a href="${escapeHtml(d.url)}" target="_blank" rel="noopener noreferrer" class="px-2.5 h-7 grid place-items-center rounded-lg bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg text-[11px] font-bold hover:opacity-90 transition">Check ↗</a>
+      </div>
+    </div>`;
+  }
+
+  // Steam DLC: full price + wishlist.
   const wished = !!State.favorites['dlc_' + d.appid];
   const price = owned ? '<span class="text-nexus-cyan font-bold">In your library</span>'
     : d.isFree ? '<span class="text-nexus-green font-bold">FREE</span>'
@@ -3214,8 +3321,6 @@ function dlcRowHTML(baseGameId, d) {
   const wishBtn = owned ? '' : (wished
     ? `<span title="On your wishlist" class="w-7 h-7 grid place-items-center rounded-lg border border-nexus-violet text-nexus-violet">★</span>`
     : `<button data-dlc-wish="${d.appid}" title="${onSale ? 'Add to wishlist' : 'Wishlist — watch for a price drop'}" class="w-7 h-7 grid place-items-center rounded-lg border border-nexus-border text-slate-400 hover:text-nexus-violet hover:border-nexus-violet transition">☆</button>`);
-  const ownBtn = `<button data-dlc-own="${baseGameId}::${encodeURIComponent(d.name)}" title="${owned ? 'Owned' : 'Mark as owned'}"
-       class="px-2 h-7 rounded-lg border text-[11px] font-bold transition ${owned ? 'bg-nexus-cyan/15 border-nexus-cyan text-nexus-cyan' : 'border-nexus-border text-slate-400 hover:text-white hover:border-nexus-cyan'}">${owned ? '✓ Own' : '+ Own'}</button>`;
   return `
   <div class="flex items-center gap-2 p-2 rounded-lg bg-nexus-bg border border-nexus-border" data-dlc-appid="${d.appid}">
     <div class="min-w-0 flex-1">
