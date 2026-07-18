@@ -252,14 +252,16 @@
       <div class="flex-1 overflow-y-auto">
         <div class="max-w-[1500px] mx-auto w-full px-4 sm:px-6 py-6 grid lg:grid-cols-[minmax(0,1fr)_380px] gap-6">
 
-          <!-- MAIN: your collection -->
+          <!-- MAIN: your collection (DLC scan results appear above it) -->
           <section class="order-2 lg:order-1 min-w-0">
+            <div id="dlcResults" class="hidden mb-6"></div>
             <h3 class="text-sm font-bold text-slate-300 mb-3 flex items-center gap-1.5">🎮 Your Collection</h3>
             <div id="libraryList" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"></div>
           </section>
 
           <!-- SIDE: add / import / compare actions -->
           <div class="order-1 lg:order-2 space-y-4">
+            <button id="dlcScanBtn" class="w-full py-2.5 rounded-2xl bg-gradient-to-r from-nexus-violet to-nexus-cyan text-nexus-bg font-bold text-sm hover:opacity-90 transition shadow-glow-soft">🧩 Find DLC for my games</button>
             <div class="p-4 rounded-2xl bg-nexus-card border border-nexus-border">
               <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-1.5">✍️ Add a game you own</h3>
               <form id="ownedForm" class="space-y-2.5" autocomplete="off">
