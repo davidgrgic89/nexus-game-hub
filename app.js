@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · dlc-fast-scan';
+const APP_BUILD = 'v2026.07.13 · dlc-autoscroll';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -2809,7 +2809,7 @@ function renderLibraryExtras() {
   const host = $('#libExtras');
   if (!host) return;
   host.innerHTML = `
-  <details class="lib-section" open>
+  <details class="lib-section">
     <summary>🎮 Console Search &amp; Checkmark</summary>
     <div class="pt-2">
       <p class="text-xs text-slate-500 mb-2">Search PlayStation, Xbox &amp; Nintendo titles and tick everything you own.</p>
@@ -3119,6 +3119,9 @@ async function runScanDlc() {
   const btn = $('#dlcScanBtn');
   if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = '⏳ Scanning…'; }
   el.innerHTML = dlcCard(`<span class="text-nexus-cyan" id="dlcProgress">⏳ Scanning your library for DLC…</span>`);
+  // The results render in the collection column (below the tools on mobile), so
+  // bring them into view immediately — otherwise the scan looks like it did nothing.
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   try {
     const data = await scanLibraryDLC((msg) => {
       const p = $('#dlcProgress');
