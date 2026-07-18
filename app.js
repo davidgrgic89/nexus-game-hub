@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · pc-store-filter';
+const APP_BUILD = 'v2026.07.13 · coop-threshold';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -745,6 +745,7 @@ const State = {
   dlcScan: null,
   libFilter: 'all',       // Library platform filter (all/pc/ps/xbox/switch)
   libStoreFilter: 'all',  // PC-only store sub-filter (all/Steam/Epic/GOG/Prime/Other)
+  coopMin: null,          // co-op "owned by at least N" threshold (null = everyone)
   searchResults: [],       // encyclopedia (full-price) results for current query
   priceDrops: new Set(),   // normalized titles of favorites with a live cheaper deal
   histCache: {},           // gameID/title -> { price, date, store } historical low
@@ -1344,6 +1345,13 @@ function gameStore(g) {
   if (g.appid) return 'Steam';
   return 'Other';
 }
+// Inline store picker shown on PC collection cards — reclassify without re-adding.
+function storeSelectHTML(g) {
+  const cur = gameStore(g);
+  const opts = ['Steam', 'Epic', 'GOG', 'Prime', 'Other']
+    .map(s => `<option value="${s}" ${s === cur ? 'selected' : ''}>${s}</option>`).join('');
+  return `<select data-store-set="${g.id}" title="Store" class="text-[10px] bg-nexus-bg border border-nexus-border rounded px-1 py-0.5 text-slate-400 focus:outline-none focus:border-nexus-cyan cursor-pointer">${opts}</select>`;
+}
 const LIB_STORES = [
   { id: 'all',   label: 'All PC', emoji: '',   match: () => true },
   { id: 'Steam', label: 'Steam',  emoji: '🟦', match: g => gameStore(g) === 'Steam' },
@@ -1430,6 +1438,7 @@ function renderLibrary() {
           <h4 class="font-semibold text-sm truncate">${escapeHtml(g.title)}</h4>
           <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
             <span class="text-xs" style="color:${sys.color}">${sys.emoji} ${escapeHtml(sys.label)}</span>
+            ${g.platform === 'PC' ? storeSelectHTML(g) : ''}
             ${dlcBadge(g)}
           </div>
         </div>
@@ -2391,6 +2400,17 @@ function wireEvents() {
       }
       return;
     }
+    const storeSet = e.target.closest('[data-store-set]');
+    if (storeSet) {
+      const game = State.library.find(g => g.id === storeSet.dataset.storeSet);
+      if (game) { game.store = e.target.value; State.persist(); renderLibrary(); }
+      return;
+    }
+    if (e.target.id === 'coopThreshold') {
+      State.coopMin = Number(e.target.value) || null;
+      renderCoopResults();
+      return;
+    }
     if (e.target.id === 'minDiscountFilter') {
       State.filters.minDiscount = Number(e.target.value) || 0;
       renderAll();
@@ -2820,21 +2840,37 @@ function decodeSync(code) {
 function currentSyncCode() { return encodeSync(State.library.map(g => g.title)); }
 function syncLink(code) { return `${location.origin}${location.pathname}#sync=${code}`; }
 
-function computeCoopIntersection() {
-  // Host library = normalized owned titles (de-duped). We compute a STRICT
-  // intersection: repeatedly filter the host set against each friend library so
-  // only games present in EVERY library survive. (Never overwrite host w/ client.)
-  const hostLibrary = [...new Set(State.library.map(g => normTitle(g.title)))];
-  let commonGames = hostLibrary;
-  State.coop.friends.forEach(friend => {
-    const friendLibrary = friend.titles.map(normTitle);
-    commonGames = commonGames.filter(gameId => friendLibrary.includes(gameId));
+function coopGroupSize() { return State.coop.friends.length + 1; }
+
+// Count how many group members (host + each friend) own each title, then return
+// those owned by at least `minOwners`, with the count — sorted most-owned first.
+// minOwners = group size gives the strict "everyone owns it" set.
+function computeCoopMatches(minOwners) {
+  const members = [State.library.map(g => g.title), ...State.coop.friends.map(f => f.titles)];
+  const counts = new Map();     // normTitle -> { count, disp }
+  members.forEach(list => {
+    const seen = new Set();
+    (list || []).forEach(t => {
+      const n = normTitle(t);
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      const e = counts.get(n) || { count: 0, disp: t };
+      e.count++;
+      counts.set(n, e);
+    });
   });
-  const disp = new Map(State.library.map(g => [normTitle(g.title), g.title]));
-  return commonGames.map(n => disp.get(n) || n);
+  const hostDisp = new Map(State.library.map(g => [normTitle(g.title), g.title]));
+  const out = [];
+  counts.forEach((e, n) => {
+    if (e.count >= minOwners) out.push({ title: hostDisp.get(n) || e.disp, owners: e.count });
+  });
+  out.sort((a, b) => b.owners - a.owners || a.title.localeCompare(b.title));
+  return out;
 }
 
-function coopCardHTML(title) {
+function coopCardHTML(item, groupSize) {
+  const title = typeof item === 'string' ? item : item.title;
+  const owners = typeof item === 'string' ? (groupSize || 0) : item.owners;
   const deal = State.allDeals().find(d => normTitle(d.title) === normTitle(title));
   const isF2P = deal && deal.f2p;
   const onSale = deal && !isF2P && (deal.sale === 0 || deal.discount > 0);
@@ -2842,22 +2878,26 @@ function coopCardHTML(title) {
   const media = cover
     ? `<img src="${escapeHtml(cover)}" alt="" class="w-full h-full object-cover" onerror="this.remove()">`
     : `<div class="w-full h-full grid place-items-center text-lg font-black text-slate-600">${escapeHtml(initialsOf(title))}</div>`;
-  const tag = isF2P
+  const everyone = groupSize && owners >= groupSize;
+  const ownersBadge = groupSize
+    ? `<span class="text-[10px] font-bold ${everyone ? 'text-nexus-green' : 'text-amber-400'}">👥 ${owners}/${groupSize} own</span>`
+    : '';
+  const dealTag = isF2P
     ? `<span class="text-[10px] font-bold text-blue-400">🎮 Free-to-Play</span>`
     : onSale
     ? (deal.sale === 0
         ? `<span class="text-[10px] font-bold text-nexus-green">🔥 FREE NOW</span>`
         : `<span class="text-[10px] font-bold text-nexus-green">🔥 -${deal.discount}% · ${money(deal.sale)}</span>`)
-    : `<span class="text-[10px] text-slate-500">Owned by all</span>`;
+    : '';
   const link = deal && (isF2P || onSale)
     ? `<a href="${escapeHtml(deal.url)}" target="_blank" rel="noopener noreferrer" class="block mt-1 text-[10px] font-bold text-nexus-cyan hover:underline">${isF2P ? 'Play Free' : 'View Deal'} ↗</a>` : '';
-  const border = isF2P ? 'border-blue-500' : onSale ? 'border-nexus-green shadow-glow' : 'border-nexus-border';
+  const border = everyone ? 'border-nexus-green shadow-glow' : isF2P ? 'border-blue-500' : onSale ? 'border-nexus-green' : 'border-nexus-border';
   return `
     <div class="rounded-lg bg-nexus-card border ${border} overflow-hidden">
       <div class="aspect-[3/4] bg-nexus-bg">${media}</div>
       <div class="p-2">
         <div class="text-xs font-semibold text-slate-200 truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
-        ${tag}${link}
+        <div class="flex flex-wrap items-center gap-x-1.5">${ownersBadge}${dealTag}</div>${link}
       </div>
     </div>`;
 }
@@ -2870,29 +2910,44 @@ function renderCoopResults() {
     return;
   }
 
-  // Free-to-Play staples are a global reference library — instantly shared by
-  // everyone, no ownership or private keys needed.
+  const groupSize = coopGroupSize();
+  // Threshold: how many of the group must own a game. Default = everyone; clamp.
+  let minOwners = State.coopMin || groupSize;
+  minOwners = Math.max(2, Math.min(minOwners, groupSize));
+
+  // "Owned by at least N" selector — options from everyone down to 2 players.
+  const opts = [];
+  for (let k = groupSize; k >= 2; k--) {
+    const label = k === groupSize ? `Everyone (${k}/${groupSize})` : `At least ${k}/${groupSize}`;
+    opts.push(`<option value="${k}" ${k === minOwners ? 'selected' : ''}>${label}</option>`);
+  }
+  const thresholdControl = groupSize >= 3 ? `
+    <label class="flex items-center gap-1.5 text-xs text-slate-400 mb-2">Show games owned by:
+      <select id="coopThreshold" class="bg-nexus-bg border border-nexus-border rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-nexus-cyan cursor-pointer">${opts.join('')}</select>
+    </label>` : '';
+
+  // Free-to-Play staples: shared by everyone, no ownership needed.
   const f2pTitles = [...new Map(State.allDeals().filter(d => d.f2p).map(d => [normTitle(d.title), d.title])).values()];
   const f2pHTML = f2pTitles.length ? `
     <div class="mb-5">
       <div class="text-xs font-bold text-blue-400 mb-2 flex items-center gap-1.5">⚡ Immediate Shared Games <span class="font-normal text-slate-500">(Free-to-Play for Everyone)</span></div>
-      <div class="grid grid-cols-3 gap-2">${f2pTitles.map(coopCardHTML).join('')}</div>
+      <div class="grid grid-cols-3 gap-2">${f2pTitles.map(t => coopCardHTML(t, groupSize)).join('')}</div>
     </div>` : '';
 
-  const inter = computeCoopIntersection();
-  const libs = State.coop.friends.length + 1;
+  const matches = computeCoopMatches(minOwners);
   let ownedHTML;
-  if (!inter.length) {
+  if (!matches.length) {
     ownedHTML = `<div class="text-center py-6 px-3 rounded-xl border border-nexus-border bg-nexus-bg text-slate-400 text-sm">
-      🙅 No overlapping co-op games detected. Check out current sales to match portfolios!</div>`;
+      🙅 No games owned by ${minOwners === groupSize ? 'everyone' : `at least ${minOwners}`}. Try lowering the threshold above.</div>`;
   } else {
-    const onSaleCount = inter.filter(t => { const d = State.allDeals().find(x => normTitle(x.title) === normTitle(t)); return d && (d.sale === 0 || d.discount > 0); }).length;
+    const onSaleCount = matches.filter(m => { const d = State.allDeals().find(x => normTitle(x.title) === normTitle(m.title)); return d && (d.sale === 0 || d.discount > 0); }).length;
+    const headline = minOwners === groupSize ? `owned by all <b class="text-slate-200">${groupSize}</b> players` : `owned by at least <b class="text-slate-200">${minOwners}</b> of ${groupSize}`;
     ownedHTML = `
-      <div class="text-xs text-slate-400 mb-2">🎯 <b class="text-slate-200">${inter.length}</b> game${inter.length === 1 ? '' : 's'} owned by all <b class="text-slate-200">${libs}</b> players${onSaleCount ? ` · <span class="text-nexus-green">${onSaleCount} on sale now</span>` : ''}</div>
-      <div class="grid grid-cols-3 gap-2">${inter.map(coopCardHTML).join('')}</div>`;
+      <div class="text-xs text-slate-400 mb-2">🎯 <b class="text-slate-200">${matches.length}</b> game${matches.length === 1 ? '' : 's'} ${headline}${onSaleCount ? ` · <span class="text-nexus-green">${onSaleCount} on sale now</span>` : ''}</div>
+      <div class="grid grid-cols-3 gap-2">${matches.map(m => coopCardHTML(m, groupSize)).join('')}</div>`;
   }
 
-  host.innerHTML = f2pHTML + `<div class="text-xs font-bold text-slate-300 mb-2">🤝 Games You All Own</div>` + ownedHTML;
+  host.innerHTML = f2pHTML + `<div class="text-xs font-bold text-slate-300 mb-2">🤝 Games You Can Play Together</div>` + thresholdControl + ownedHTML;
 }
 
 // Build all Library-panel extension sections (called when the panel opens).
@@ -3022,6 +3077,7 @@ function handleCompareCoop() {
     else bad++;
   });
   State.coop.friends = friends;
+  State.coopMin = null; // reset threshold to "everyone" for the new group
   State.persist();               // keep the comparison across reloads
   renderCoopResults();
   renderCoopGroups();
@@ -3050,6 +3106,7 @@ function handleLoadCoopGroup(id) {
   const g = (State.coop.groups || []).find(x => x.id === id);
   if (!g) return;
   State.coop.friends = g.members.map(m => ({ label: m.label, titles: [...m.titles] }));
+  State.coopMin = null;
   State.persist();
   renderCoopResults();
   renderCoopGroups();
