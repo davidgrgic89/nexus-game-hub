@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · coop-share-link';
+const APP_BUILD = 'v2026.07.13 · coop-covers'
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -2903,16 +2903,34 @@ function computeCoopMatches(minOwners) {
   return out;
 }
 
+// Cover candidates for a co-op card: a matching deal's art, the host library's
+// Steam appID capsule (most "owned by all" games are in the host library), or the
+// atlas. Anything unresolved falls through to the title-harvest (Steam/Wikipedia).
+function coopCover(title) {
+  const out = [];
+  const deal = State.allDeals().find(d => normTitle(d.title) === normTitle(title));
+  if (deal) (deal.imgs || []).forEach(u => { if (u && !u.startsWith('data:')) out.push(u); });
+  const lib = State.library.find(g => normTitle(g.title) === normTitle(title) && g.appid);
+  if (lib) { const b = `https://cdn.cloudflare.steamstatic.com/steam/apps/${lib.appid}`; out.push(`${b}/library_600x900_2x.jpg`, `${b}/library_600x900.jpg`, `${b}/header.jpg`); }
+  const atlas = atlasLookup(title);
+  if (atlas) out.push(atlas);
+  return [...new Set(out)];
+}
+
 function coopCardHTML(item, groupSize) {
   const title = typeof item === 'string' ? item : item.title;
   const owners = typeof item === 'string' ? (groupSize || 0) : item.owners;
   const deal = State.allDeals().find(d => normTitle(d.title) === normTitle(title));
   const isF2P = deal && deal.f2p;
   const onSale = deal && !isF2P && (deal.sale === 0 || deal.discount > 0);
-  const cover = deal ? coverOf(deal) : null;
-  const media = cover
-    ? `<img src="${escapeHtml(cover)}" alt="" class="w-full h-full object-cover" onerror="this.remove()">`
-    : `<div class="w-full h-full grid place-items-center text-lg font-black text-slate-600">${escapeHtml(initialsOf(title))}</div>`;
+  const covers = coopCover(title);
+  const media = `
+    <div class="cover-frame relative w-full h-full bg-nexus-bg"${covers.length ? '' : ` data-harvest="${escapeHtml(title)}"`}>
+      <div class="cover-holder w-full h-full">
+        <div class="cover-fallback absolute inset-0 grid place-items-center text-lg font-black text-slate-600">${escapeHtml(initialsOf(title))}</div>
+        ${covers.length ? `<img src="${escapeHtml(covers[0])}" data-title="${escapeHtml(title)}" data-srcs='${escapeHtml(JSON.stringify(covers))}' data-idx="0" class="absolute inset-0 w-full h-full object-cover z-[1]" onerror="nexusImgErr(this)" onload="const fb=this.closest('.cover-frame')?.querySelector('.cover-fallback'); if(fb) fb.style.display='none'">` : ''}
+      </div>
+    </div>`;
   const everyone = groupSize && owners >= groupSize;
   const ownersBadge = groupSize
     ? `<span class="text-[10px] font-bold ${everyone ? 'text-nexus-green' : 'text-amber-400'}">👥 ${owners}/${groupSize} own</span>`
@@ -3000,6 +3018,7 @@ function renderCoopResults() {
     </div>`;
 
   host.innerHTML = sharedBanner + shareBar + f2pHTML + `<div class="text-xs font-bold text-slate-300 mb-2">🤝 Games You Can Play Together</div>` + thresholdControl + ownedHTML;
+  ImageHarvester.observeAll();   // lazily harvest covers for cards without candidates
 }
 
 // Build + reveal the single shareable comparison link.
@@ -3047,6 +3066,16 @@ function renderLibraryExtras() {
     <summary>📥 Import Steam Library</summary>
     <div class="pt-2 space-y-2">
       <p class="text-xs text-slate-500">Enter your public SteamID64 <b>or</b> custom vanity name. Your profile's <b>Game Details</b> must be set to Public so Steam will share your games.</p>
+      <details class="text-xs rounded-lg border border-nexus-border bg-nexus-bg/60 px-3 py-2">
+        <summary class="cursor-pointer text-nexus-cyan font-semibold select-none">🔓 First time? How to make your Steam library public</summary>
+        <ol class="list-decimal list-inside mt-2 space-y-1 text-slate-400">
+          <li>Open your <a href="https://steamcommunity.com/my/edit/settings" target="_blank" rel="noopener noreferrer" class="text-nexus-cyan underline">Steam Privacy Settings ↗</a> (log in if asked).</li>
+          <li>Set <b class="text-slate-200">My profile</b> to <b class="text-slate-200">Public</b>.</li>
+          <li>Set <b class="text-slate-200">Game details</b> to <b class="text-slate-200">Public</b> — <span class="text-amber-300">this is the setting that shares your games.</span></li>
+          <li>Wait ~30 seconds for Steam to apply it, then paste your ID or vanity name below and sync.</li>
+        </ol>
+        <p class="mt-1.5 text-[11px] text-slate-500">Find your vanity name in the same page, under <b>Custom URL</b>.</p>
+      </details>
       <input id="steamIdInput" type="text" placeholder="76561198… or your vanity name (e.g. gabelogannewell)" autocomplete="off"
         class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
       <button id="steamImportBtn" class="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg font-bold text-sm hover:opacity-90 transition">🔄 Sync Library</button>
