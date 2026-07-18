@@ -256,7 +256,8 @@
           <section class="order-2 lg:order-1 min-w-0">
             <div id="dlcResults" class="hidden mb-6"></div>
             <h3 class="text-sm font-bold text-slate-300 mb-3 flex items-center gap-1.5">🎮 Your Collection</h3>
-            <div id="libFilterChips" class="flex flex-wrap gap-1.5 mb-3"></div>
+            <div id="libFilterChips" class="flex flex-wrap gap-1.5 mb-2"></div>
+            <div id="libStoreChips" class="flex flex-wrap gap-1.5 mb-3 pl-1"></div>
             <div id="libraryList" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"></div>
           </section>
 
@@ -279,8 +280,16 @@
                     <option value="Switch">Switch 1</option>
                     <option value="Switch2">Switch 2</option>
                   </select>
-                  <input name="dlc" type="text" placeholder="DLC / add-ons (comma-separated)" class="flex-[1.4] bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
+                  <select name="store" title="PC store (optional)" class="flex-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan">
+                    <option value="">Store…</option>
+                    <option value="Steam">Steam</option>
+                    <option value="Epic">Epic</option>
+                    <option value="GOG">GOG</option>
+                    <option value="Prime">Prime</option>
+                    <option value="Other">Other</option>
+                  </select>
                 </div>
+                <input name="dlc" type="text" placeholder="DLC / add-ons (comma-separated)" class="w-full bg-nexus-bg border border-nexus-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-nexus-cyan" />
                 <button type="submit" class="w-full py-2 rounded-lg bg-gradient-to-r from-nexus-cyan to-nexus-violet text-nexus-bg font-bold text-sm hover:opacity-90 transition">
                   + Add to Library
                 </button>

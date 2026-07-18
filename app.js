@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · library-filter';
+const APP_BUILD = 'v2026.07.13 · pc-store-filter';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -743,7 +743,8 @@ const State = {
   // DLC finder: persisted lookup cache (bases + details) + last scan (transient).
   dlcCache: loadJSON(STORAGE.dlc, { bases: {}, details: {} }),
   dlcScan: null,
-  libFilter: 'all',   // Library collection platform filter (all/pc/ps/xbox/switch)
+  libFilter: 'all',       // Library platform filter (all/pc/ps/xbox/switch)
+  libStoreFilter: 'all',  // PC-only store sub-filter (all/Steam/Epic/GOG/Prime/Other)
   searchResults: [],       // encyclopedia (full-price) results for current query
   priceDrops: new Set(),   // normalized titles of favorites with a live cheaper deal
   histCache: {},           // gameID/title -> { price, date, store } historical low
@@ -1335,9 +1336,48 @@ const LIB_FILTERS = [
   { id: 'xbox',   label: 'Xbox',        emoji: '💚', match: g => g.platform === 'Xbox' },
   { id: 'switch', label: 'Switch',      emoji: '🛑', match: g => g.platform === 'Switch' || g.platform === 'Switch2' },
 ];
+// ---- PC store sub-filter (Steam/Epic/GOG/Prime/Other) — revocable block ----
+// A PC game's store: an explicit tag if set, else Steam when it carries a Steam
+// appID (imports), else "Other". Only used when the PC platform filter is active.
+function gameStore(g) {
+  if (g.store) return g.store;
+  if (g.appid) return 'Steam';
+  return 'Other';
+}
+const LIB_STORES = [
+  { id: 'all',   label: 'All PC', emoji: '',   match: () => true },
+  { id: 'Steam', label: 'Steam',  emoji: '🟦', match: g => gameStore(g) === 'Steam' },
+  { id: 'Epic',  label: 'Epic',   emoji: '⚫', match: g => gameStore(g) === 'Epic' },
+  { id: 'GOG',   label: 'GOG',    emoji: '🟣', match: g => gameStore(g) === 'GOG' },
+  { id: 'Prime', label: 'Prime',  emoji: '🔵', match: g => gameStore(g) === 'Prime' },
+  { id: 'Other', label: 'Other',  emoji: '🎮', match: g => gameStore(g) === 'Other' },
+];
+function renderLibStoreChips() {
+  const host = $('#libStoreChips');
+  if (!host) return;
+  if ((State.libFilter || 'all') !== 'pc') { host.innerHTML = ''; return; }
+  const pc = State.library.filter(g => g.platform === 'PC');
+  const present = LIB_STORES.filter(s => s.id === 'all' || pc.some(s.match));
+  // Nothing to split if all PC games are one store.
+  if (present.filter(s => s.id !== 'all').length <= 1) { host.innerHTML = ''; return; }
+  const cur = State.libStoreFilter || 'all';
+  host.innerHTML = present.map(s => {
+    const count = pc.filter(s.match).length;
+    const active = cur === s.id;
+    return `<button data-lib-store="${s.id}" class="px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${active ? 'bg-nexus-violet/15 border-nexus-violet text-nexus-violet' : 'border-nexus-border text-slate-500 hover:text-white hover:border-slate-500'}">${s.emoji ? s.emoji + ' ' : ''}${escapeHtml(s.label)} <span class="opacity-60">${count}</span></button>`;
+  }).join('');
+}
+// ---- end PC store sub-filter ----
+
 function libFilterMatch(g) {
   const f = LIB_FILTERS.find(x => x.id === (State.libFilter || 'all')) || LIB_FILTERS[0];
-  return f.match(g);
+  if (!f.match(g)) return false;
+  // PC-only store sub-filter.
+  if ((State.libFilter || 'all') === 'pc' && (State.libStoreFilter || 'all') !== 'all') {
+    const s = LIB_STORES.find(x => x.id === State.libStoreFilter);
+    if (s && !s.match(g)) return false;
+  }
+  return true;
 }
 function renderLibFilterChips() {
   const host = $('#libFilterChips');
@@ -1358,6 +1398,7 @@ function renderLibrary() {
   const countEl = $('#libraryCount');
   if (countEl) countEl.textContent = `${State.library.length} game${State.library.length === 1 ? '' : 's'}`;
   renderLibFilterChips();
+  renderLibStoreChips();
   if (!State.library.length) {
     list.innerHTML = `<div class="col-span-full text-center py-16 text-slate-500">
       <div class="text-4xl mb-2">📚</div><p class="text-sm">Your library is empty.</p>
@@ -2316,7 +2357,14 @@ function wireEvents() {
       return;
     }
     const libFilter = e.target.closest('[data-lib-filter]');
-    if (libFilter) { State.libFilter = libFilter.dataset.libFilter; renderLibrary(); return; }
+    if (libFilter) {
+      State.libFilter = libFilter.dataset.libFilter;
+      if (State.libFilter !== 'pc') State.libStoreFilter = 'all'; // store sub-filter is PC-only
+      renderLibrary();
+      return;
+    }
+    const libStore = e.target.closest('[data-lib-store]');
+    if (libStore) { State.libStoreFilter = libStore.dataset.libStore; renderLibrary(); return; }
     const coopLoad = e.target.closest('[data-coop-load]');
     if (coopLoad) { handleLoadCoopGroup(coopLoad.dataset.coopLoad); return; }
     const coopDel = e.target.closest('[data-coop-del]');
@@ -2428,7 +2476,9 @@ function wireEvents() {
     const appid = titleInput?.dataset.appid || '';
     const gameID = titleInput?.dataset.gameid || '';
     const imgs = appid ? [`https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/library_600x900.jpg`] : [];
-    State.library.push({ id: uid(), title, platform: fd.get('platform') || 'PC', dlc, owned: true, imgs, appid: appid || undefined, gameID: gameID || undefined });
+    // Optional PC store tag (Steam/Epic/GOG/Prime/Other) for the store sub-filter.
+    const store = (fd.get('store') || '').trim() || (appid ? 'Steam' : undefined);
+    State.library.push({ id: uid(), title, platform: fd.get('platform') || 'PC', dlc, owned: true, imgs, appid: appid || undefined, gameID: gameID || undefined, store });
     State.persist();
     e.target.reset();
     if (titleInput) { titleInput.dataset.appid = ''; titleInput.dataset.gameid = ''; }
