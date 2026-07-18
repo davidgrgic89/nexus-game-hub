@@ -53,11 +53,13 @@ const STORAGE = {
   // Bumped to v2: discards metadata cached before the hardened Steam proxy /
   // age-gate fixes, so every game re-enriches and can finally pick up trailers.
   meta:      'nexus.meta.v2',
+  // Co-op lounge: current friends + saved "crews" (named comparison groups).
+  coop:      'nexus.coop.v1',
 };
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · rawg-console-media';
+const APP_BUILD = 'v2026.07.13 · saved-crews';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -733,7 +735,9 @@ const State = {
   booted: false,
   loadingMore: false,
   activeDetail: null,
-  coop: { friends: [] },   // [{ label, titles: [] }] imported friend libraries
+  // Co-op: current friends [{ label, titles:[] }] + saved crews (named groups).
+  // Persisted so a comparison survives reloads and multiple crews can be kept.
+  coop: loadJSON(STORAGE.coop, { friends: [], groups: [] }),
   searchResults: [],       // encyclopedia (full-price) results for current query
   priceDrops: new Set(),   // normalized titles of favorites with a live cheaper deal
   histCache: {},           // gameID/title -> { price, date, store } historical low
@@ -753,6 +757,7 @@ const State = {
     saveJSON(STORAGE.favorites, this.favorites);
     saveJSON(STORAGE.library, this.library);
     saveJSON(STORAGE.manual, this.manual);
+    saveJSON(STORAGE.coop, { friends: this.coop.friends, groups: this.coop.groups || [] });
   },
 
   allDeals() {
@@ -2251,6 +2256,11 @@ function wireEvents() {
     if (e.target.closest('#genSyncBtn')) { handleGenSync(); return; }
     if (e.target.closest('#copySyncBtn')) { handleCopySync(); return; }
     if (e.target.closest('#compareCoopBtn')) { handleCompareCoop(); return; }
+    if (e.target.closest('#saveCoopBtn')) { handleSaveCoopGroup(); return; }
+    const coopLoad = e.target.closest('[data-coop-load]');
+    if (coopLoad) { handleLoadCoopGroup(coopLoad.dataset.coopLoad); return; }
+    const coopDel = e.target.closest('[data-coop-del]');
+    if (coopDel) { handleDeleteCoopGroup(coopDel.dataset.coopDel); return; }
     if (e.target.closest('#steamImportBtn') || e.target.closest('#steamSyncRetry')) { handleSteamImport(); return; }
     if (e.target.closest('#steamDiagBtn')) { testSteamConnection(); return; }
 
@@ -2837,11 +2847,25 @@ function renderLibraryExtras() {
         <button id="compareCoopBtn" class="mt-2 w-full py-2 rounded-lg bg-gradient-to-r from-nexus-violet to-nexus-cyan text-nexus-bg font-bold text-sm hover:opacity-90 transition">🎮 Find Games We All Own</button>
       </div>
       <div id="coopResults"></div>
+
+      <div class="pt-1 border-t border-nexus-border">
+        <p class="text-xs text-slate-500 mb-2 mt-3">💾 Save this crew so you don't have to paste codes again:</p>
+        <div class="flex gap-1.5">
+          <input id="coopGroupName" type="text" placeholder="Crew name (e.g. Weekend Squad)" autocomplete="off"
+            class="flex-1 bg-nexus-bg border border-nexus-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-nexus-cyan" />
+          <button id="saveCoopBtn" class="shrink-0 px-3 py-1.5 rounded-lg bg-nexus-violet text-white font-bold text-xs hover:opacity-90 transition">💾 Save Crew</button>
+        </div>
+        <div class="mt-2">
+          <div class="text-xs font-bold text-slate-300 mb-1.5">🗂️ Saved Crews</div>
+          <div id="coopGroups" class="space-y-1.5"></div>
+        </div>
+      </div>
     </div>
   </details>`;
 
   renderConsoleResults('');
   renderCoopResults();
+  renderCoopGroups();
 }
 
 /* ---- Library-extension button handlers ---- */
@@ -2888,9 +2912,71 @@ function handleCompareCoop() {
     else bad++;
   });
   State.coop.friends = friends;
+  State.persist();               // keep the comparison across reloads
   renderCoopResults();
+  renderCoopGroups();
   if (!friends.length) toast('None of those codes could be read', 'err');
   else toast(`Comparing ${friends.length + 1} libraries${bad ? ` · ${bad} code(s) invalid` : ''}`, bad ? 'warn' : 'ok');
+}
+
+/* ---- Saved co-op crews (named, persisted comparison groups) ---- */
+function handleSaveCoopGroup() {
+  if (!State.coop.friends.length) { toast('Compare at least one friend first, then save the crew', 'warn'); return; }
+  const input = $('#coopGroupName');
+  const name = (input?.value || '').trim() || `Crew ${(State.coop.groups?.length || 0) + 1}`;
+  State.coop.groups = State.coop.groups || [];
+  // Snapshot the current friends (deep copy) so the crew is self-contained.
+  const members = State.coop.friends.map(f => ({ label: f.label, titles: [...f.titles] }));
+  const existing = State.coop.groups.find(g => g.name.toLowerCase() === name.toLowerCase());
+  if (existing) { existing.members = members; existing.savedAt = Date.now(); }
+  else State.coop.groups.unshift({ id: uid(), name, members, savedAt: Date.now() });
+  State.persist();
+  if (input) input.value = '';
+  renderCoopGroups();
+  toast(existing ? `Updated crew “${name}”` : `Saved crew “${name}”`, 'ok');
+}
+
+function handleLoadCoopGroup(id) {
+  const g = (State.coop.groups || []).find(x => x.id === id);
+  if (!g) return;
+  State.coop.friends = g.members.map(m => ({ label: m.label, titles: [...m.titles] }));
+  State.persist();
+  renderCoopResults();
+  renderCoopGroups();
+  toast(`Loaded crew “${g.name}” (${g.members.length} friend${g.members.length === 1 ? '' : 's'})`, 'ok');
+}
+
+function handleDeleteCoopGroup(id) {
+  State.coop.groups = (State.coop.groups || []).filter(g => g.id !== id);
+  State.persist();
+  renderCoopGroups();
+  toast('Crew deleted', 'info');
+}
+
+// Render the saved-crews list (load / delete each).
+function renderCoopGroups() {
+  const host = $('#coopGroups');
+  if (!host) return;
+  const groups = State.coop.groups || [];
+  if (!groups.length) {
+    host.innerHTML = `<p class="text-xs text-slate-600">No saved crews yet. Compare friends above, then save the crew to reuse it anytime.</p>`;
+    return;
+  }
+  host.innerHTML = groups.map(g => {
+    const active = State.coop.friends.length === g.members.length &&
+      State.coop.friends.every((f, i) => g.members[i] && g.members[i].titles.length === f.titles.length);
+    return `
+    <div class="flex items-center gap-2 p-2 rounded-lg bg-nexus-bg border ${active ? 'border-nexus-cyan' : 'border-nexus-border'}">
+      <div class="min-w-0">
+        <div class="text-sm font-semibold text-slate-200 truncate">${escapeHtml(g.name)}${active ? ' <span class="text-[10px] text-nexus-cyan">· active</span>' : ''}</div>
+        <div class="text-[10px] text-slate-500">${g.members.length} friend${g.members.length === 1 ? '' : 's'} · saved ${new Date(g.savedAt).toLocaleDateString()}</div>
+      </div>
+      <div class="ml-auto flex items-center gap-1.5 shrink-0">
+        <button data-coop-load="${g.id}" class="px-2.5 py-1 rounded-lg bg-nexus-cyan/15 border border-nexus-cyan text-nexus-cyan text-xs font-bold hover:bg-nexus-cyan/25 transition">Load</button>
+        <button data-coop-del="${g.id}" title="Delete crew" class="w-7 h-7 grid place-items-center rounded-lg border border-nexus-border text-slate-500 hover:text-nexus-red hover:border-nexus-red transition">✕</button>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 async function handleSteamImport() {
