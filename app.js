@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · dlc-finder';
+const APP_BUILD = 'v2026.07.13 · dlc-hints';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -1353,7 +1353,10 @@ function renderLibrary() {
       <div class="flex items-start justify-between gap-2">
         <div class="min-w-0">
           <h4 class="font-semibold text-sm truncate">${escapeHtml(g.title)}</h4>
-          <span class="text-xs" style="color:${sys.color}">${sys.emoji} ${escapeHtml(sys.label)}</span>
+          <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+            <span class="text-xs" style="color:${sys.color}">${sys.emoji} ${escapeHtml(sys.label)}</span>
+            ${dlcBadge(g)}
+          </div>
         </div>
         <button data-lib-remove="${g.id}" class="text-slate-500 hover:text-nexus-red transition text-lg leading-none shrink-0">×</button>
       </div>
@@ -2271,6 +2274,8 @@ function wireEvents() {
     if (dlcWish) { wishlistDlc(dlcWish.dataset.dlcWish); return; }
     const dlcOwn = e.target.closest('[data-dlc-own]');
     if (dlcOwn) { const [gid, nm] = dlcOwn.dataset.dlcOwn.split('::'); ownDlc(gid, decodeURIComponent(nm)); return; }
+    const dlcGame = e.target.closest('[data-dlc-game]');
+    if (dlcGame) { showDlcForGame(dlcGame.dataset.dlcGame); return; }
     const coopLoad = e.target.closest('[data-coop-load]');
     if (coopLoad) { handleLoadCoopGroup(coopLoad.dataset.coopLoad); return; }
     const coopDel = e.target.closest('[data-coop-del]');
@@ -3024,6 +3029,7 @@ async function resolveOwnedAppId(game) {
 // Walk the library, collect available DLC grouped by base game.
 async function scanLibraryDLC(onProgress) {
   const cache = State.dlcCache;
+  cache.byGame = cache.byGame || {};   // gameId -> [{appid,name}] for collection hints
   const games = State.library.slice(0, DLC_SCAN_MAX_GAMES);
   const results = [];
   let scanned = 0, skipped = 0, totalDlc = 0;
@@ -3040,7 +3046,7 @@ async function scanLibraryDLC(onProgress) {
       dlcIds = (data && Array.isArray(data.dlc)) ? data.dlc : [];
       cache.bases[appid] = dlcIds;
     }
-    if (!dlcIds.length) continue;
+    if (!dlcIds.length) { cache.byGame[game.id] = []; continue; }
 
     const dlcs = [];
     for (const did of dlcIds) {
@@ -3065,9 +3071,10 @@ async function scanLibraryDLC(onProgress) {
       totalDlc++;
       dlcs.push({ appid: did, ...det });
     }
+    cache.byGame[game.id] = dlcs.map(d => ({ appid: d.appid, name: d.name }));
     if (dlcs.length) results.push({ baseTitle: game.title, baseGameId: game.id, dlcs });
   }
-  State.persist(); // keep the freshly filled lookup cache
+  State.persist(); // keep the freshly filled lookup cache + per-game hints
   return { results, scanned, skipped, totalDlc };
 }
 
@@ -3089,11 +3096,45 @@ async function runScanDlc() {
     });
     State.dlcScan = data;
     renderDlcResults(data);
+    renderLibrary(); // refresh collection so per-game DLC hints appear
   } catch (e) {
     el.innerHTML = dlcCard(`<span class="text-amber-400">DLC scan failed: ${escapeHtml(e.message)}. Steam may be busy — try again shortly.</span>`);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || '🧩 Find DLC for my games'; }
   }
+}
+
+// Collection-card DLC hint: how many available DLC a game has that you don't own
+// yet (from the last scan's cached list). '' when the game wasn't scanned or has
+// no DLC; a subtle "complete" pill when you own them all.
+function dlcBadge(g) {
+  const list = State.dlcCache.byGame && State.dlcCache.byGame[g.id];
+  if (!list || !list.length) return '';
+  const unowned = list.filter(d => !isDlcOwned(g.id, d.name)).length;
+  if (unowned === 0) {
+    return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-nexus-cyan/10 text-nexus-cyan border border-nexus-cyan/40">🧩 DLC complete</span>`;
+  }
+  return `<button data-dlc-game="${g.id}" title="Show available DLC" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-nexus-violet/15 text-nexus-violet border border-nexus-violet/50 hover:bg-nexus-violet/25 transition">🧩 ${unowned} DLC available</button>`;
+}
+
+// Show one game's DLC instantly from cache (no network) and scroll to it.
+function showDlcForGame(gameId) {
+  const g = State.library.find(x => x.id === gameId);
+  const list = (State.dlcCache.byGame && State.dlcCache.byGame[gameId]) || [];
+  if (!g || !list.length) { runScanDlc(); return; }
+  const dlcs = list.map(x => {
+    const det = State.dlcCache.details[x.appid] || {};
+    return {
+      appid: x.appid, name: det.name || x.name,
+      isFree: !!det.isFree, discount: det.discount || 0,
+      priceFinal: det.priceFinal != null ? det.priceFinal : null,
+      priceInitial: det.priceInitial != null ? det.priceInitial : null,
+      url: det.url || `https://store.steampowered.com/app/${x.appid}/`,
+    };
+  });
+  State.dlcScan = { results: [{ baseTitle: g.title, baseGameId: g.id, dlcs }], scanned: 1, skipped: 0, totalDlc: dlcs.length };
+  renderDlcResults(State.dlcScan);
+  document.getElementById('dlcResults')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 const dlcCard = (inner) => `<div class="p-4 rounded-2xl bg-nexus-card border border-nexus-border text-sm text-slate-300">${inner}
