@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · console-dlc';
+const APP_BUILD = 'v2026.07.13 · library-filter';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -743,6 +743,7 @@ const State = {
   // DLC finder: persisted lookup cache (bases + details) + last scan (transient).
   dlcCache: loadJSON(STORAGE.dlc, { bases: {}, details: {} }),
   dlcScan: null,
+  libFilter: 'all',   // Library collection platform filter (all/pc/ps/xbox/switch)
   searchResults: [],       // encyclopedia (full-price) results for current query
   priceDrops: new Set(),   // normalized titles of favorites with a live cheaper deal
   histCache: {},           // gameID/title -> { price, date, store } historical low
@@ -1326,18 +1327,51 @@ function renderFavorites() {
 }
 
 /* ---- Library panel ---- */
+// Platform filters for the collection. `match` classifies a library entry.
+const LIB_FILTERS = [
+  { id: 'all',    label: 'All',         emoji: '📚', match: () => true },
+  { id: 'pc',     label: 'PC',          emoji: '🖥️', match: g => g.platform === 'PC' },
+  { id: 'ps',     label: 'PlayStation', emoji: '💙', match: g => g.platform === 'PlayStation' },
+  { id: 'xbox',   label: 'Xbox',        emoji: '💚', match: g => g.platform === 'Xbox' },
+  { id: 'switch', label: 'Switch',      emoji: '🛑', match: g => g.platform === 'Switch' || g.platform === 'Switch2' },
+];
+function libFilterMatch(g) {
+  const f = LIB_FILTERS.find(x => x.id === (State.libFilter || 'all')) || LIB_FILTERS[0];
+  return f.match(g);
+}
+function renderLibFilterChips() {
+  const host = $('#libFilterChips');
+  if (!host) return;
+  const cur = State.libFilter || 'all';
+  // Show "All" plus only the platforms actually present in the library.
+  const chips = LIB_FILTERS.filter(f => f.id === 'all' || State.library.some(f.match)).map(f => {
+    const count = State.library.filter(f.match).length;
+    const active = cur === f.id;
+    return `<button data-lib-filter="${f.id}" class="px-2.5 py-1 rounded-full text-xs font-semibold border transition ${active ? 'bg-nexus-cyan/15 border-nexus-cyan text-nexus-cyan' : 'border-nexus-border text-slate-400 hover:text-white hover:border-slate-500'}">${f.emoji} ${escapeHtml(f.label)} <span class="opacity-60">${count}</span></button>`;
+  }).join('');
+  // Only worth showing when there's more than one platform to choose between.
+  host.innerHTML = LIB_FILTERS.filter(f => f.id !== 'all' && State.library.some(f.match)).length > 1 ? chips : '';
+}
+
 function renderLibrary() {
   const list = $('#libraryList');
   const countEl = $('#libraryCount');
   if (countEl) countEl.textContent = `${State.library.length} game${State.library.length === 1 ? '' : 's'}`;
+  renderLibFilterChips();
   if (!State.library.length) {
     list.innerHTML = `<div class="col-span-full text-center py-16 text-slate-500">
       <div class="text-4xl mb-2">📚</div><p class="text-sm">Your library is empty.</p>
       <p class="text-xs mt-1">Mark deals as owned, or add games from the panel on the right.</p></div>`;
     return;
   }
+  const filtered = State.library.filter(libFilterMatch);
+  if (!filtered.length) {
+    const label = (LIB_FILTERS.find(x => x.id === State.libFilter) || {}).label || '';
+    list.innerHTML = `<div class="col-span-full text-center py-12 text-slate-500 text-sm">No ${escapeHtml(label)} games in your library yet.</div>`;
+    return;
+  }
 
-  list.innerHTML = State.library.map(g => {
+  list.innerHTML = filtered.map(g => {
     const sys = systemMeta(g.platform === 'Switch2' ? 'switch2'
       : g.platform === 'Switch' ? 'switch'
       : g.platform === 'PlayStation' ? 'ps'
@@ -2276,6 +2310,13 @@ function wireEvents() {
     if (dlcOwn) { const [gid, nm] = dlcOwn.dataset.dlcOwn.split('::'); ownDlc(gid, decodeURIComponent(nm)); return; }
     const dlcGame = e.target.closest('[data-dlc-game]');
     if (dlcGame) { showDlcForGame(dlcGame.dataset.dlcGame); return; }
+    if (e.target.closest('[data-dismiss-dlcnote]')) {
+      localStorage.setItem('nexus.ui.dlcNoteHidden', '1');
+      e.target.closest('[data-dismiss-dlcnote]').parentElement.remove();
+      return;
+    }
+    const libFilter = e.target.closest('[data-lib-filter]');
+    if (libFilter) { State.libFilter = libFilter.dataset.libFilter; renderLibrary(); return; }
     const coopLoad = e.target.closest('[data-coop-load]');
     if (coopLoad) { handleLoadCoopGroup(coopLoad.dataset.coopLoad); return; }
     const coopDel = e.target.closest('[data-coop-del]');
@@ -3260,9 +3301,11 @@ function renderDlcResults(data) {
     return;
   }
   const hasConsole = data.results.some(g => g.console);
-  const consoleNote = hasConsole
-    ? `<p class="text-[11px] text-amber-200/70 bg-amber-500/5 border border-amber-500/30 rounded-lg px-3 py-2 mb-3">
-         ℹ️ Console DLC shows names and a store link only. No free source provides PlayStation/Xbox/Nintendo DLC prices, so open the store to see the price and wishlist there for alerts.</p>`
+  const consoleNote = (hasConsole && localStorage.getItem('nexus.ui.dlcNoteHidden') !== '1')
+    ? `<div class="relative text-[11px] text-amber-200/70 bg-amber-500/5 border border-amber-500/30 rounded-lg px-3 py-2 pr-7 mb-3">
+         ℹ️ Console DLC shows names and a store link only. No free source provides PlayStation/Xbox/Nintendo DLC prices, so open the store to see the price and wishlist there for alerts.
+         <button data-dismiss-dlcnote title="Don't show again" class="absolute top-1.5 right-1.5 w-5 h-5 grid place-items-center rounded text-amber-200/60 hover:text-white hover:bg-amber-500/20">✕</button>
+       </div>`
     : '';
   const rawgNote = data.rawgMissing
     ? `<p class="text-[11px] text-amber-300 mb-3">⚠ Some console games were skipped: set the RAWG_API_KEY secret on Cloudflare to enable console DLC.</p>`
