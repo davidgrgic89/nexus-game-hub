@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · coop-threshold';
+const APP_BUILD = 'v2026.07.13 · coop-share-link';
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -2352,6 +2352,9 @@ function wireEvents() {
     if (e.target.closest('#copySyncBtn')) { handleCopySync(); return; }
     if (e.target.closest('#compareCoopBtn')) { handleCompareCoop(); return; }
     if (e.target.closest('#saveCoopBtn')) { handleSaveCoopGroup(); return; }
+    if (e.target.closest('#shareCoopBtn')) { handleShareComparison(); return; }
+    if (e.target.closest('#copyCoopShareBtn')) { handleCopyCoopShare(); return; }
+    if (e.target.closest('#exitSharedCoop')) { exitSharedCoop(); return; }
     if (e.target.closest('#dlcScanBtn')) { runScanDlc(); return; }
     if (e.target.closest('#dlcClose')) { const el = $('#dlcResults'); if (el) { el.classList.add('hidden'); el.innerHTML = ''; } return; }
     const dlcWish = e.target.closest('[data-dlc-wish]');
@@ -2840,13 +2843,45 @@ function decodeSync(code) {
 function currentSyncCode() { return encodeSync(State.library.map(g => g.title)); }
 function syncLink(code) { return `${location.origin}${location.pathname}#sync=${code}`; }
 
-function coopGroupSize() { return State.coop.friends.length + 1; }
+// ---- Shareable comparison: encode EVERY member's library into one link so all
+// players open it and see the identical group comparison (no pairwise codes). ----
+function encodeCoop(memberTitleArrays) {
+  const json = JSON.stringify(memberTitleArrays);
+  let x = '';
+  for (let i = 0; i < json.length; i++) x += String.fromCharCode(json.charCodeAt(i) ^ SYNC_KEY.charCodeAt(i % SYNC_KEY.length));
+  return b64urlEncode(x);
+}
+function decodeCoop(code) {
+  try {
+    let raw = (code || '').trim();
+    const m = raw.match(/coop=([^&#\s]+)/);
+    if (m) raw = m[1];
+    const x = b64urlDecode(raw);
+    let json = '';
+    for (let i = 0; i < x.length; i++) json += String.fromCharCode(x.charCodeAt(i) ^ SYNC_KEY.charCodeAt(i % SYNC_KEY.length));
+    const arr = JSON.parse(json);
+    if (!Array.isArray(arr)) return null;
+    const members = arr.filter(a => Array.isArray(a)).map(a => a.filter(t => typeof t === 'string'));
+    return members.length ? members : null;
+  } catch { return null; }
+}
+function coopShareLink(code) { return `${location.origin}${location.pathname}#coop=${code}`; }
+
+// The current comparison group as [{label, titles}]. A shared snapshot (opened
+// from a link) is the group as-is; otherwise it's you (host) + your pasted friends.
+function coopMembers() {
+  if (State.coop.shared) return State.coop.shared.members;
+  return [{ label: 'You', titles: State.library.map(g => g.title) },
+          ...State.coop.friends.map(f => ({ label: f.label, titles: f.titles }))];
+}
+
+function coopGroupSize() { return coopMembers().length; }
 
 // Count how many group members (host + each friend) own each title, then return
 // those owned by at least `minOwners`, with the count — sorted most-owned first.
 // minOwners = group size gives the strict "everyone owns it" set.
 function computeCoopMatches(minOwners) {
-  const members = [State.library.map(g => g.title), ...State.coop.friends.map(f => f.titles)];
+  const members = coopMembers().map(m => m.titles);
   const counts = new Map();     // normTitle -> { count, disp }
   members.forEach(list => {
     const seen = new Set();
@@ -2905,7 +2940,7 @@ function coopCardHTML(item, groupSize) {
 function renderCoopResults() {
   const host = $('#coopResults');
   if (!host) return;
-  if (!State.coop.friends.length) {
+  if (!State.coop.friends.length && !State.coop.shared) {
     host.innerHTML = `<p class="text-xs text-slate-500">Paste friend codes above and compare to reveal games everyone owns.</p>`;
     return;
   }
@@ -2947,7 +2982,50 @@ function renderCoopResults() {
       <div class="grid grid-cols-3 gap-2">${matches.map(m => coopCardHTML(m, groupSize)).join('')}</div>`;
   }
 
-  host.innerHTML = f2pHTML + `<div class="text-xs font-bold text-slate-300 mb-2">🤝 Games You Can Play Together</div>` + thresholdControl + ownedHTML;
+  const sharedBanner = State.coop.shared
+    ? `<div class="flex items-center gap-2 mb-2 p-2 rounded-lg bg-nexus-violet/10 border border-nexus-violet/40 text-xs text-violet-200">
+         👥 Viewing a shared comparison · <b>${groupSize}</b> players.
+         <button id="exitSharedCoop" class="ml-auto text-nexus-cyan hover:underline shrink-0">Use my library</button>
+       </div>`
+    : '';
+  // One link that bundles every member's library, so all players see this exact
+  // comparison without swapping codes.
+  const shareBar = `
+    <div class="mb-3">
+      <button id="shareCoopBtn" class="w-full py-2 rounded-lg bg-nexus-bg border border-nexus-border text-xs font-semibold hover:border-nexus-cyan transition">🔗 Share this comparison (one link for everyone)</button>
+      <div id="coopShareWrap" class="hidden mt-1.5 flex gap-1.5">
+        <input id="coopShareOutput" readonly class="flex-1 bg-nexus-bg border border-nexus-border rounded-lg px-2 py-1.5 text-xs text-slate-300 font-mono" />
+        <button id="copyCoopShareBtn" class="shrink-0 px-3 py-1.5 rounded-lg bg-nexus-cyan text-nexus-bg font-bold text-xs hover:opacity-90 transition">Copy</button>
+      </div>
+    </div>`;
+
+  host.innerHTML = sharedBanner + shareBar + f2pHTML + `<div class="text-xs font-bold text-slate-300 mb-2">🤝 Games You Can Play Together</div>` + thresholdControl + ownedHTML;
+}
+
+// Build + reveal the single shareable comparison link.
+function handleShareComparison() {
+  const members = coopMembers();
+  if (members.length < 2) { toast('Compare at least one friend first', 'warn'); return; }
+  const link = coopShareLink(encodeCoop(members.map(m => m.titles)));
+  const wrap = $('#coopShareWrap'); const out = $('#coopShareOutput');
+  if (out) out.value = link;
+  if (wrap) wrap.classList.remove('hidden');
+  if (link.length > 8000) toast('Link is long — some chat apps may cut it. Save the crew as a backup.', 'warn');
+  else toast('Comparison link ready — copy and send it to everyone', 'ok');
+}
+async function handleCopyCoopShare() {
+  const out = $('#coopShareOutput');
+  if (!out || !out.value) { handleShareComparison(); return; }
+  const ok = await copyText(out.value);
+  toast(ok ? 'Comparison link copied 📋' : 'Copy failed — select the link manually', ok ? 'ok' : 'warn');
+  out.focus(); out.select();
+}
+function exitSharedCoop() {
+  State.coop.shared = null;
+  State.coopMin = null;
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  renderCoopResults();
+  toast('Switched back to your own library', 'info');
 }
 
 // Build all Library-panel extension sections (called when the panel opens).
@@ -3077,6 +3155,7 @@ function handleCompareCoop() {
     else bad++;
   });
   State.coop.friends = friends;
+  State.coop.shared = null;      // leave any shared-link view for your own group
   State.coopMin = null; // reset threshold to "everyone" for the new group
   State.persist();               // keep the comparison across reloads
   renderCoopResults();
@@ -3087,12 +3166,14 @@ function handleCompareCoop() {
 
 /* ---- Saved co-op crews (named, persisted comparison groups) ---- */
 function handleSaveCoopGroup() {
-  if (!State.coop.friends.length) { toast('Compare at least one friend first, then save the crew', 'warn'); return; }
+  // Save the current friends, or the players of a shared comparison when viewing one.
+  const source = State.coop.shared ? State.coop.shared.members : State.coop.friends;
+  if (!source.length) { toast('Compare at least one friend first, then save the crew', 'warn'); return; }
   const input = $('#coopGroupName');
   const name = (input?.value || '').trim() || `Crew ${(State.coop.groups?.length || 0) + 1}`;
   State.coop.groups = State.coop.groups || [];
-  // Snapshot the current friends (deep copy) so the crew is self-contained.
-  const members = State.coop.friends.map(f => ({ label: f.label, titles: [...f.titles] }));
+  // Snapshot the members (deep copy) so the crew is self-contained.
+  const members = source.map(f => ({ label: f.label, titles: [...f.titles] }));
   const existing = State.coop.groups.find(g => g.name.toLowerCase() === name.toLowerCase());
   if (existing) { existing.members = members; existing.savedAt = Date.now(); }
   else State.coop.groups.unshift({ id: uid(), name, members, savedAt: Date.now() });
@@ -3106,6 +3187,7 @@ function handleLoadCoopGroup(id) {
   const g = (State.coop.groups || []).find(x => x.id === id);
   if (!g) return;
   State.coop.friends = g.members.map(m => ({ label: m.label, titles: [...m.titles] }));
+  State.coop.shared = null;
   State.coopMin = null;
   State.persist();
   renderCoopResults();
@@ -3561,6 +3643,17 @@ async function handleSteamImport() {
 
 // If the page was opened from a shared sync link, auto-load that friend.
 function ingestSyncFromUrl() {
+  // A full shared comparison (all players) takes priority over a single library.
+  const c = location.hash.match(/coop=([^&#\s]+)/);
+  if (c) {
+    const members = decodeCoop(c[1]);
+    if (members && members.length) {
+      State.coop.shared = { members: members.map((titles, i) => ({ label: `Player ${i + 1}`, titles })) };
+      State.coopMin = null;
+      toast(`Loaded a shared comparison (${members.length} players) — open My Library ▸ Co-op Lounge`, 'ok');
+      return;
+    }
+  }
   const m = location.hash.match(/sync=([^&#\s]+)/);
   if (!m) return;
   const titles = decodeSync(m[1]);
