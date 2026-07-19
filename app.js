@@ -61,7 +61,7 @@ const STORAGE = {
 
 // Visible build marker (shown in the footer) so it's obvious at a glance which
 // deploy is live. Bump on each push that changes user-facing behavior.
-const APP_BUILD = 'v2026.07.13 · coop-covers'
+const APP_BUILD = 'v2026.07.19 · console-honest-prices'
 
 const CHEAPSHARK_PAGE_SIZE = 30;
 const cheapSharkUrl = (page) =>
@@ -544,6 +544,10 @@ class NexusDataEngine {
       source:   raw.source || 'mock',
       fullPrice: !!raw.fullPrice,
       f2p:      !!raw.f2p,
+      // Console prices come from curated placeholder data (no live PS/Xbox/Switch
+      // price feed exists), so we must NOT present them as real. Flag them so the
+      // UI shows "check the store" instead of a possibly-wrong price/discount.
+      priceUnknown: ['playstation', 'xbox', 'nintendo'].includes(raw.category || '') && !raw.f2p,
       gameID:    raw.gameID,
       steamAppID: raw.steamAppID,
     };
@@ -809,7 +813,9 @@ function dealPasses(deal) {
   if (State.filters.freeOnly && deal.sale !== 0) return false;
   // Min-discount gate: only actual discounts count (giveaways read as 100% off;
   // permanently free-to-play and full-price titles have 0% and are filtered out).
-  if (State.filters.minDiscount > 0 && (deal.discount || 0) < State.filters.minDiscount) return false;
+  // Console deals have no live price feed (priceUnknown), so any discount on them
+  // is not real — they never satisfy a min-discount filter.
+  if (State.filters.minDiscount > 0 && (deal.priceUnknown || (deal.discount || 0) < State.filters.minDiscount)) return false;
   if (State.filters.search && !deal.title.toLowerCase().includes(State.filters.search)) return false;
   if (deal.category === 'free' || deal.category === 'pc') {
     if (!storeMatch(deal, State.filters.storeFilter[deal.category])) return false;
@@ -992,14 +998,17 @@ function cardHTML(deal) {
   const fav = State.isFavorite(deal.id);
   const owned = State.isOwned(deal.title);
   const cat = categoryMeta(deal.category);
-  const isFree = deal.sale === 0;
+  const isFree = deal.sale === 0 && !deal.priceUnknown;
   const imgs = Array.isArray(deal.imgs) ? deal.imgs.filter(u => u && !u.startsWith('data:')) : [];
 
   const tagBadges = deal.tags.map(t =>
     `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide bg-nexus-bg/70 border border-nexus-border text-slate-300">${escapeHtml(t)}</span>`
   ).join('');
 
-  const priceBlock = deal.f2p
+  const priceBlock = deal.priceUnknown
+    ? `<span class="text-slate-200 font-bold text-sm">${escapeHtml(storeBrand(deal))}</span>
+       <span class="block text-[10px] text-slate-500">Check the store for price</span>`
+    : deal.f2p
     ? `<span class="text-blue-400 font-extrabold text-lg drop-shadow-[0_0_8px_rgba(59,130,246,.5)]">Free to Play</span>`
     : isFree
     ? `<span class="text-nexus-green font-extrabold text-lg drop-shadow-[0_0_8px_rgba(34,197,94,.5)]">FREE</span>`
@@ -1009,7 +1018,9 @@ function cardHTML(deal) {
     : `<span class="text-slate-500 line-through text-xs decoration-nexus-red/80 decoration-2">${money(deal.retail)}</span>
        <span class="text-nexus-green font-extrabold text-lg ml-1.5">${money(deal.sale)}</span>`;
 
-  const discountBadge = deal.f2p
+  const discountBadge = deal.priceUnknown
+    ? ''
+    : deal.f2p
     ? `<div class="absolute top-2 left-2 z-[2] px-2 py-1 rounded-md text-[10px] font-black text-white bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,.6)]">FREE-TO-PLAY</div>`
     : deal.fullPrice
     ? `<div class="absolute top-2 left-2 z-[2] px-2 py-1 rounded-md text-[10px] font-black text-nexus-bg bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,.5)]">NOT ON SALE</div>`
@@ -1147,7 +1158,7 @@ function sectionHTML(cat, items) {
 function detectPriceDrops() {
   const drops = new Set();
   Object.values(State.favorites).forEach(f => {
-    const deal = State.deals.find(d => normTitle(d.title) === normTitle(f.title) && (d.discount > 0 || d.sale === 0));
+    const deal = State.deals.find(d => normTitle(d.title) === normTitle(f.title) && !d.priceUnknown && (d.discount > 0 || d.sale === 0));
     if (deal) {
       const favSale = (typeof f.sale === 'number') ? f.sale : Infinity;
       if (f.fullPrice || deal.sale < favSale) drops.add(normTitle(f.title));
@@ -1318,7 +1329,8 @@ function renderFavorites() {
         <a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" class="font-semibold text-sm hover:text-nexus-cyan transition block truncate">${escapeHtml(f.title)}</a>
         <div class="text-xs mt-0.5" style="color:${sys.color}">${sys.emoji} ${escapeHtml(sys.label)}</div>
         <div class="text-xs mt-1">
-          ${f.sale === 0 ? '<span class="text-nexus-green font-bold">FREE</span>'
+          ${f.priceUnknown ? '<span class="text-slate-400 font-semibold">Check the store</span>'
+            : f.sale === 0 ? '<span class="text-nexus-green font-bold">FREE</span>'
             : `<span class="text-slate-500 line-through">${money(f.retail)}</span>
                <span class="text-nexus-green font-bold ml-1">${money(f.sale)}</span>`}
         </div>
@@ -1496,7 +1508,7 @@ function toggleFavorite(id) {
       id: deal.id, title: deal.title,
       img: (deal.imgs && deal.imgs[0]) ? deal.imgs[0] : placeholderCover(deal.title, categoryMeta(deal.category).accent),
       url: deal.url, system: deal.system, retail: deal.retail, sale: deal.sale,
-      fullPrice: !!deal.fullPrice, gameID: deal.gameID,
+      fullPrice: !!deal.fullPrice, priceUnknown: !!deal.priceUnknown, gameID: deal.gameID,
     };
     toast(deal.fullPrice ? 'Bookmarked — we\'ll watch for a price drop 👀' : 'Added to favorites ⭐', 'ok');
   }
@@ -1604,7 +1616,9 @@ function relatedEditions(deal) {
 function fallbackDescription(deal, related) {
   const plats = [...new Set(related.flatMap(d => d.tags))].join(', ');
   const stores = [...new Set(related.map(d => d.store))].join(', ');
-  const priceLine = deal.sale === 0
+  const priceLine = deal.priceUnknown
+    ? 'We do not have a live price feed for console storefronts, so open the store to see the current price.'
+    : deal.sale === 0
     ? 'It is currently 100% free to keep — claim it from the storefront before the giveaway ends.'
     : `This ${editionLabel(deal.title)} is currently discounted ${deal.discount}% — down from ${money(deal.retail)} to ${money(deal.sale)}.`;
   return `${deal.title} is available across ${related.length} tracked ${related.length === 1 ? 'listing' : 'listings'} (${stores}). ${priceLine} Supported platforms: ${plats}. Add it to your Library to track ownership, or pin it to Favorites to watch for deeper price drops across every ecosystem.`;
@@ -1629,6 +1643,7 @@ const STORE_ICON = (brand) => ({
 }[brand] || '🏬');
 function buyLabel(deal) {
   const brand = storeBrand(deal);
+  if (deal.priceUnknown) return `Open ${brand}`;
   return deal.sale === 0 ? `Get Free on ${brand}` : `${deal.source === 'cheapshark' ? 'View Deal' : 'Buy Directly'} on ${brand}`;
 }
 
@@ -1636,11 +1651,15 @@ function editionRowHTML(d, activeId, cheapestId) {
   const isActive = d.id === activeId;
   const isCheapest = d.id === cheapestId;
   const brand = storeBrand(d);
-  const price = d.sale === 0
+  const price = d.priceUnknown
+    ? '<span class="text-slate-400 text-xs font-semibold">Check the store</span>'
+    : d.sale === 0
     ? '<span class="text-nexus-green font-extrabold">FREE</span>'
     : `<span class="text-slate-500 line-through text-xs decoration-nexus-red/80 decoration-2">${money(d.retail)}</span>
        <span class="text-nexus-green font-extrabold ml-1.5">${money(d.sale)}</span>`;
-  const disc = (d.discount > 0 || d.sale === 0)
+  const disc = d.priceUnknown
+    ? ''
+    : (d.discount > 0 || d.sale === 0)
     ? `<span class="ml-2 px-1.5 py-0.5 rounded text-[10px] font-black text-nexus-bg bg-nexus-green">${d.sale === 0 ? '100%' : '-' + d.discount + '%'}</span>`
     : '';
   const best = isCheapest ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-black text-nexus-bg bg-amber-400">💰 BEST PRICE</span>` : '';
@@ -1767,7 +1786,8 @@ function renderDetail(deal) {
   const owned = State.isOwned(deal.title);
 
   // Cheapest paid listing across all merchants (for the "Best Price" badge).
-  const paid = related.filter(d => d.sale > 0);
+  // priceUnknown console listings have no real price, so never win "Best Price".
+  const paid = related.filter(d => d.sale > 0 && !d.priceUnknown);
   const cheapestId = paid.length ? paid.reduce((a, b) => (b.sale < a.sale ? b : a)).id : null;
 
   // Group related listings by edition, with the current deal's group first.
@@ -1839,7 +1859,10 @@ function renderDetail(deal) {
       </div>
 
       <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
-        ${deal.fullPrice
+        ${deal.priceUnknown
+          ? `<a href="${escapeHtml(deal.url)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 text-slate-200 font-semibold hover:text-nexus-cyan transition">Check price on ${escapeHtml(storeBrand(deal))} ↗</a>
+             <span class="text-slate-500 text-xs">· no live console price feed</span>`
+          : deal.fullPrice
           ? `<span class="text-slate-300">Current: <b class="text-slate-100">${money(deal.sale)}</b> <span class="text-amber-400/90 text-xs">· not on active sale</span></span>`
           : deal.sale === 0
           ? `<span class="text-nexus-green font-bold">FREE — 100% off ${money(deal.retail)}</span>`
@@ -2235,6 +2258,8 @@ async function fetchHistoricalLow(deal) {
 async function loadHistoricalLow(deal) {
   const el = $('#detailHistLow');
   if (!el) return;
+  // Console listings have no reliable price history feed — don't imply one.
+  if (deal.priceUnknown) { el.innerHTML = ''; return; }
   el.innerHTML = `<span class="text-slate-500">🛒 Checking all-time historical low…</span>`;
   try {
     const low = await fetchHistoricalLow(deal);
@@ -2922,7 +2947,8 @@ function coopCardHTML(item, groupSize) {
   const owners = typeof item === 'string' ? (groupSize || 0) : item.owners;
   const deal = State.allDeals().find(d => normTitle(d.title) === normTitle(title));
   const isF2P = deal && deal.f2p;
-  const onSale = deal && !isF2P && (deal.sale === 0 || deal.discount > 0);
+  // Console deals (priceUnknown) have no live price feed, so never claim a sale.
+  const onSale = deal && !isF2P && !deal.priceUnknown && (deal.sale === 0 || deal.discount > 0);
   const covers = coopCover(title);
   const media = `
     <div class="cover-frame relative w-full h-full bg-nexus-bg"${covers.length ? '' : ` data-harvest="${escapeHtml(title)}"`}>
@@ -2993,7 +3019,7 @@ function renderCoopResults() {
     ownedHTML = `<div class="text-center py-6 px-3 rounded-xl border border-nexus-border bg-nexus-bg text-slate-400 text-sm">
       🙅 No games owned by ${minOwners === groupSize ? 'everyone' : `at least ${minOwners}`}. Try lowering the threshold above.</div>`;
   } else {
-    const onSaleCount = matches.filter(m => { const d = State.allDeals().find(x => normTitle(x.title) === normTitle(m.title)); return d && (d.sale === 0 || d.discount > 0); }).length;
+    const onSaleCount = matches.filter(m => { const d = State.allDeals().find(x => normTitle(x.title) === normTitle(m.title)); return d && !d.priceUnknown && (d.sale === 0 || d.discount > 0); }).length;
     const headline = minOwners === groupSize ? `owned by all <b class="text-slate-200">${groupSize}</b> players` : `owned by at least <b class="text-slate-200">${minOwners}</b> of ${groupSize}`;
     ownedHTML = `
       <div class="text-xs text-slate-400 mb-2">🎯 <b class="text-slate-200">${matches.length}</b> game${matches.length === 1 ? '' : 's'} ${headline}${onSaleCount ? ` · <span class="text-nexus-green">${onSaleCount} on sale now</span>` : ''}</div>
